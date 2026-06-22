@@ -221,9 +221,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-QA_REPORT.md
 
-# Project-private docs — kept out of the public GitHub repo
+# OS junk
+.DS_Store
+
+# Internal working notes — kept out of the public repo.
+# (The benchmark harness, results, and metrics under benchmarks/ ARE published;
+# only the internal directive/spec docs below stay private.)
 docs/
 CLAUDE.md
-benchmarks/
+AGENTS.md
+QA_REPORT.md
+benchmarks/BENCHMARK_SPEC.md
