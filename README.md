@@ -1,16 +1,15 @@
 # Interdict
 
-**A safety layer between whoever is writing SQL — an AI agent, or you — and your
-Postgres database.** Developer preview.
+**A runtime safety layer between AI agents and Postgres.** Developer preview.
 
 ## What it does
 
-Give an agent (or a tired human) direct database access and a single bad
-statement can wipe a table. `DELETE FROM clients` with no `WHERE`. An `UPDATE`
-that was meant for one row but hits a million. A stray semicolon that turns one
-scoped delete into a full-table one. Database permissions don't help here —
-they answer *"is this role allowed to touch this table,"* not *"how much will
-this particular statement change, and can I take it back?"*
+Give Claude, Codex, or another AI coding agent direct database access and a
+single bad statement can wipe a table. `DELETE FROM clients` with no `WHERE`.
+An `UPDATE` that was meant for one row but hits a million. A stray semicolon
+that turns one scoped delete into a full-table one. Database permissions don't
+help here — they answer *"is this role allowed to touch this table,"* not *"how
+much will this particular statement change, and can I take it back?"*
 
 Interdict answers those two questions, on every statement, before damage is done:
 
@@ -51,7 +50,7 @@ Install Interdict from PyPI:
 pip install interdict-db
 ```
 
-Start the MCP server:
+Start the Interdict MCP server:
 
 ```bash
 AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \
@@ -59,33 +58,69 @@ AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(3
 interdict
 ```
 
-For local development from the repo:
+This is the main product surface: your agent talks to Interdict's MCP server
+instead of touching Postgres directly. Interdict is active in an agent chat only
+when that MCP server is connected for the chat.
+
+### 2. Connect Claude or Codex
+
+The user does not need to phrase every request as "use Interdict." Once the MCP
+server is connected, your agent instructions should say that any database work
+inside a larger task must go through Interdict's MCP tools.
+
+**Claude Code:**
 
 ```bash
-uv sync && uv run python -m adapters.tui
+claude mcp add interdict \
+  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \
+  --env AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  -- interdict
 ```
 
-Docker can bring up Postgres and the launcher together:
+**Codex** (CLI, or edit `~/.codex/config.toml`):
 
 ```bash
-docker compose --profile app run --rm app
+codex mcp add interdict \
+  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \
+  --env AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  -- interdict
 ```
 
-The launcher asks **who is writing the SQL**:
+```toml
+# ~/.codex/config.toml   (table is mcp_servers, with an underscore)
+[mcp_servers.interdict]
+command = "interdict"
 
-```text
-  1  🤖  An agent writes SQL   (Claude Code, Codex — via MCP)
-  2  ⌨   I write SQL           (Human Mode)
+[mcp_servers.interdict.env]
+AGENT_DB_DSN = "postgresql://postgres:postgres@localhost:5433/pagila"
+AGENT_OPERATOR_TOKEN = "paste-a-random-token-at-least-32-chars"
 ```
 
-### 2. Human Mode — you write SQL
+> **Codex PATH gotcha:** Codex may not inherit your shell's PATH. If it can't
+> find `interdict`, use the absolute path from `which interdict` as
+> `command`. Verify with `codex mcp list`, then `/mcp` in the Codex TUI.
 
-You type SQL at a prompt; every statement goes through the safety layer first.
+To check whether Interdict is active in the current chat, ask the agent to call
+`interdict_status`.
+
+A held write is approved out-of-band with `approve_query` and the operator
+token, which the agent should not see.
+
+### 3. Optional local SQL console
+
+Interdict also ships a Rich terminal console for local demos and manual SQL. It
+is not the primary agent workflow.
+
+```bash
+interdict-tui
+```
+
+In the console, every statement goes through the same safety engine first.
 Safe reads and scoped writes just run. A risky write is simulated and shown
 before anything happens:
 
 ```text
-agentdb ▸ DELETE FROM clients WHERE active = true
+interdict ▸ DELETE FROM clients WHERE active = true
 ╭─ ⚠ CONFIRM WRITE ─────────────────────────────╮
 │ DELETE FROM clients WHERE active = true        │
 │ Blast radius: 2,300,000 rows (precise)         │
@@ -114,7 +149,7 @@ when the statement's shape allows).
 | `\tables` | tables the policy allows |
 | `\help` · `\quit` | help · leave |
 
-**See your savings** any time with `\stats` (or `agentdb stats` from the shell):
+**See your savings** any time with `\stats` (or `interdict-stats` from the shell):
 statements guarded, blocked, held for confirmation, overrides, reverts, and the
 largest blast radius it held back.
 
@@ -124,53 +159,9 @@ largest blast radius it held back.
 > its id — instead of restoring the entire database and losing everyone else's
 > work since the last dump.
 
-### 3. Agent Mode — your AI agent writes SQL
-
-The agent talks to Interdict's MCP server and calls `run_query` instead of
-touching the database directly. Same engine, same guarantees as Human Mode. Two
-ways to spell the launch command in the configs below:
-
-- **pip-installed:** `interdict` (works from any directory)
-- **from source:** `uv run --directory /ABSOLUTE/PATH/TO/agent-db-safety interdict`
-
-**Claude Code:**
-
-```bash
-claude mcp add interdict \
-  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \
-  --env AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
-  -- interdict
-```
-
-**Codex** (CLI, or edit `~/.codex/config.toml`):
-
-```bash
-codex mcp add interdict \
-  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \
-  --env AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
-  -- interdict
-```
-
-```toml
-# ~/.codex/config.toml   (table is mcp_servers, with an underscore)
-[mcp_servers.interdict]
-command = "interdict"          # from source: command = "uv", args = ["run",
-                               #   "--directory","/ABS/PATH","interdict"]
-[mcp_servers.interdict.env]
-AGENT_DB_DSN = "postgresql://postgres:postgres@localhost:5433/pagila"
-AGENT_OPERATOR_TOKEN = "paste-a-random-token-at-least-32-chars"
-```
-
-> **Codex PATH gotcha:** Codex may not inherit your shell's PATH. If it can't
-> find `interdict`, use the absolute path from `which interdict` as
-> `command`. Verify with `codex mcp list`, then `/mcp` in the Codex TUI.
-
-A held (confirmation-gated) write is approved out-of-band with `approve_query`
-and the operator token, which the agent never sees.
-
 ### 4. Set up the dev database
 
-The launcher needs a Postgres to talk to. The repo ships a seeded one:
+Interdict needs a Postgres to talk to. The repo ships a seeded one:
 
 ```bash
 docker compose up -d        # seeded Postgres on localhost:5433 (Pagila + large tables)
@@ -185,11 +176,12 @@ other database with `AGENT_DB_DSN`. Re-seed from scratch with
 ## How it works
 
 ```
-writer ──(MCP / Human Mode TUI)──> [thin adapter] ──> [SAFETY ENGINE] ──> Postgres
-                                                            │
-                                       parse → classify → policy → (simulate?) → decide
-                                                            │           (record undo on writes)
-                                                        async: audit log, advisory intent check
+AI agent ──(MCP)──> [Interdict adapter] ──> [SAFETY ENGINE] ──> Postgres
+                                 │                 │
+optional local SQL console ──────┘                 │
+                              parse → classify → policy → (simulate?) → decide
+                                                   │           (record undo on writes)
+                                               async: audit log, advisory intent check
 ```
 
 - **The engine** (`engine/`) is a standalone, transport-agnostic core. It parses
@@ -198,9 +190,9 @@ writer ──(MCP / Human Mode TUI)──> [thin adapter] ──> [SAFETY ENGINE
   `EXPLAIN ANALYZE DELETE …` can't smuggle anything past), classifies it, checks
   it against a declarative YAML policy, and — only for a risky write — simulates
   the blast radius with a time-boxed `BEGIN; … ; ROLLBACK`.
-- **Adapters are thin renderers** over that engine. The MCP server (Agent Mode)
-  and the `rich` terminal UI (Human Mode) share the exact same gate; a web UI
-  later would too. Policy logic never lives in an adapter.
+- **Adapters are thin renderers** over that engine. The MCP server is the main
+  product surface; the optional `rich` terminal console uses the same gate for
+  local demos/manual checks. Policy logic never lives in an adapter.
 - **The hot path stays cheap.** Only blocking-vs-allowing is on it (in-memory,
   microseconds). Simulation is opt-in, gated to risky writes, and time-boxed
   (`statement_timeout` + `lock_timeout`). Audit logging and the optional LLM
@@ -309,7 +301,7 @@ Before putting Interdict in front of a real database:
 
 ```
 engine/      # safety core: parse, classify, policy, simulate, undo, audit, intent, session
-adapters/    # mcp_server.py (Agent Mode), tui.py (Human Mode)
+adapters/    # mcp_server.py (agent layer), tui.py (optional local console)
 policies/    # declarative YAML policy files
 corpus/      # red (should-block) + green (should-allow) query sets
 benchmarks/  # latency harness, RESULTS.md, METRICS.md, CI latency gate

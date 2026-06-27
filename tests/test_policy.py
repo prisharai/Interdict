@@ -281,6 +281,19 @@ def test_blast_radius_timeout_requires_confirmation():
     assert d.allowed is True and d.requires_confirmation is True
 
 
+def test_blast_radius_timeout_with_zero_estimate_requires_confirmation():
+    # Regression: a precise count timeout may still carry a planner estimate of
+    # zero. The timeout means the impact is unknown, not safe.
+    cfg = SimulationConfig(block_over_rows=100000, confirm_over_rows=1000)
+    d = apply_blast_radius(
+        _ALLOWED,
+        _result(estimated_rows=0, exact_rows=None, timed_out=True),
+        cfg,
+    )
+    assert d.allowed is True and d.requires_confirmation is True
+    assert d.simulation["affected_rows"] is None
+
+
 def test_skipped_simulation_leaves_decision_untouched():
     d = apply_blast_radius(
         _ALLOWED, SimulationResult(method="skipped"), SimulationConfig()

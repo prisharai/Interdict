@@ -18,61 +18,61 @@ const runSteps = [
     label: "Step 0",
     title: "Install Interdict",
     copy:
-      "Install the MCP server once. If you are evaluating from this repo, install from source. If you want the app and Postgres together, use the Docker profile.",
+      "Install the MCP server your agent will call before touching Postgres. The PyPI package name is interdict-db; the command it installs is interdict.",
     code:
-      "pip install interdict-db\n# from source:\npip install .\n\n# Docker alternative:\ndocker compose --profile app run --rm app",
+      "pip install interdict-db\n\n# confirm the command exists\ninterdict --help",
     expected:
-      "The interdict command is available for MCP, with agentdb kept as the optional local shell. The Docker path opens the launcher after the database becomes healthy.",
+      "The interdict command is available. This is the MCP layer for Claude, Codex, Cursor, or any MCP-capable agent.",
     note:
-      "Use interdict for agent integrations. agentdb remains the terminal launcher.",
+      "Use interdict for agent integrations. The optional local console is interdict-tui.",
   },
   {
     label: "Step 1",
-    title: "Start the dev database",
+    title: "Start the bundled test database",
     copy:
-      "Start the seeded Postgres fixture. Interdict can also point at any Postgres database through AGENT_DB_DSN.",
+      "Bring up the seeded Postgres fixture. It includes Pagila plus large generated tables so you can safely watch blast-radius checks on realistic row counts.",
     code:
       "docker compose up -d\n\n# default DSN:\npostgresql://postgres:postgres@localhost:5433/pagila",
     expected:
-      "Postgres is healthy on localhost:5433 with Pagila and large benchmark tables loaded.",
+      "Postgres is healthy on localhost:5433 with Pagila, metric_sample, and other test tables loaded.",
     note:
-      "First Docker start seeds Pagila and large benchmark tables; later starts reuse the volume.",
+      "First start seeds millions of rows and can take a minute. Reset any experiment with docker compose down -v && docker compose up -d.",
   },
   {
     label: "Step 2",
-    title: "Put Interdict between the agent and database",
+    title: "Connect your agent",
     copy:
-      "Register the MCP server. The agent calls run_query instead of receiving direct database access.",
+      "Register Interdict as an MCP server. After this, database work inside a larger Claude or Codex task should route through Interdict instead of direct Postgres access.",
     code:
       "codex mcp add interdict \\\n  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \\\n  --env AGENT_OPERATOR_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))') \\\n  -- interdict",
     expected:
-      "The agent can call run_query. Held writes require approve_query with an operator token the model never sees.",
+      "The chat has Interdict tools available: run_query, revert_write, list_pending_approvals, approve_query, audit_status, and interdict_status.",
     note:
-      "Use the same command shape for Claude Code; the important part is that the model talks to Interdict, not Postgres.",
+      "For Claude Code, use the same shape with claude mcp add interdict ... -- interdict.",
   },
   {
     label: "Step 3",
-    title: "Optional local SQL shell",
+    title: "Verify Interdict is active",
     copy:
-      "The product is agent-first, but the same safety engine is available as a local SQL shell for manual testing.",
+      "Interdict is active only in chats where the MCP server is connected. Verify the current chat before testing writes.",
     code:
-      "agentdb\n\nagentdb ▸ SELECT count(*) FROM clients;\nagentdb ▸ \\stats\nagentdb ▸ \\undo",
+      "# In Codex\n/mcp\n\n# Or ask the agent:\nCall interdict_status and tell me whether Interdict is active in this chat.",
     expected:
-      "You get the same parse, simulate, block, confirm, audit, and undo behavior in a terminal.",
+      "The agent reports active=true, the protected DSN, policy mode, simulation status, and undo status.",
     note:
-      "Human mode exists for evaluation and manual use; the main integration path is the MCP server.",
+      "Users should not need to say \"use Interdict\" every time. The agent should use it whenever a task needs database work.",
   },
   {
     label: "Step 4",
-    title: "Verify before trusting changes",
+    title: "Run the practice prompts",
     copy:
-      "Run tests and the latency gate before changing policy behavior or the request path. The value of this product depends on both correctness and negligible overhead.",
+      "Now use normal agent prompts on the bundled database. You should see one allowed read, one undoable write, one held write, and one blocked broad delete.",
     code:
-      "uv run pytest\nuv run ruff check .\nuv run black --check .\nuv run python -m benchmarks.ci_latency_gate",
+      "Find actor_id 1 and summarize it.\n\nUpdate actor_id 1 by setting last_update = last_update, show the undo_action_id, then revert it.\n\nDelete rows from metric_sample where sensor_id <= 2000 and explain exactly why Interdict blocked or held it.",
     expected:
-      "The test suite passes and the benchmark gate remains under the committed p99 latency budget.",
+      "Allowed reads return rows. Reversible writes return undo_action_id. Broad writes return block_reason or approval_id instead of silently touching data.",
     note:
-      "The benchmark is local and hardware-sensitive, but it is the guardrail for the ~0 ms overhead claim.",
+      "If the demo DB gets changed during testing, reset it with docker compose down -v && docker compose up -d.",
   },
 ];
 

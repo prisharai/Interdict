@@ -65,6 +65,8 @@ class SimulationResult:
     @property
     def affected_rows(self) -> int | None:
         """Best available row count -- exact if we have it, else the estimate."""
+        if self.timed_out and self.exact_rows is None:
+            return None
         return self.exact_rows if self.exact_rows is not None else self.estimated_rows
 
     def to_dict(self) -> dict:

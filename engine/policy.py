@@ -518,6 +518,11 @@ def apply_blast_radius(
     sim = result.to_dict()
     rows = result.affected_rows
 
+    # If the precise/counting path timed out, the blast radius is not bounded.
+    # Hold for confirmation even if a planner estimate happens to be present.
+    if result.timed_out and result.exact_rows is None:
+        return replace(decision, simulation=sim, requires_confirmation=True)
+
     # Over the hard limit -> block (always wins).
     if (
         rows is not None
@@ -539,12 +544,10 @@ def apply_blast_radius(
         )
 
     # Unknown blast radius: we asked but couldn't get a row count. Fail closed
-    # for writes (sec. 4) -- never silently allow. A timeout is treated as
+    # for writes (sec. 4) -- never silently allow. A timeout is treated above as
     # recoverable (hold for confirmation); any other unmeasurable case
     # (planner error, nested-DML CTE) is a hard block.
     if rows is None:
-        if result.timed_out:
-            return replace(decision, simulation=sim, requires_confirmation=True)
         violation = Violation(
             ReasonCode.BLAST_RADIUS_UNKNOWN,
             "Could not measure the statement's blast radius "

@@ -1,11 +1,12 @@
-"""Human Mode: an interactive, guarded SQL terminal (Slice 2).
+"""Optional local TUI: an interactive, guarded SQL terminal.
 
-A polished terminal UI for a *person* writing SQL by hand -- the "I write SQL"
-half of the landing screen. Every statement goes through the same engine the
-agents do: it's parsed, policy-checked, and -- for a risky write -- simulated so
-the blast radius is shown *before* anything runs. Destructive writes require an
-explicit keystroke to confirm; every executed write prints an undo id you can
-revert with one command.
+Interdict's primary product surface is the MCP layer between an AI agent and
+Postgres. This TUI is a local demo/admin console for a person writing SQL by
+hand. Every statement goes through the same engine the agents do: it's parsed,
+policy-checked, and -- for a risky write -- simulated so the blast radius is
+shown *before* anything runs. Destructive writes require an explicit keystroke
+to confirm; every executed write prints an undo id you can revert with one
+command.
 
 This module is pure rendering + input over ``engine.session.GuardedSession``. No
 policy / simulation / undo logic lives here. Swap ``rich`` for a web frontend
@@ -133,9 +134,9 @@ def _render_table(rows: list[dict], limit: int = 20) -> None:
 def audit_savings(path: str) -> dict:
     """Summarize what the safety layer caught, from the audit log.
 
-    Tolerant of both event vocabularies -- the Human Mode session
+    Tolerant of both event vocabularies -- the local TUI session
     (propose/execute/override/revert) and the MCP adapter ('query' events) --
-    so `agentdb stats` works against whatever wrote the log.
+    so `interdict-stats` works against whatever wrote the log.
     """
     s = {
         "guarded": 0,
@@ -197,7 +198,7 @@ def render_stats(path: str) -> None:
     table.add_row("Blocked", f"[red]{s['blocked']}[/red]")
     table.add_row("Held for confirmation", f"[yellow]{s['held']}[/yellow]")
     table.add_row("Executed", f"[green]{s['executed']}[/green]")
-    table.add_row("Human overrides", str(s["overrides"]))
+    table.add_row("Manual overrides", str(s["overrides"]))
     table.add_row("Reverts (undo)", str(s["reverts"]))
     console.print(
         Panel(
@@ -218,7 +219,7 @@ _HELP = """[bold]Commands[/bold]
   [cyan]\\revert <id>[/cyan]       revert a specific undo id
   [cyan]\\history[/cyan]           show this session's executed writes
   [cyan]\\tables[/cyan]            list tables the policy allows
-  [cyan]\\quit[/cyan]              leave Human Mode
+  [cyan]\\quit[/cyan]              leave the local SQL console
 
 Type any SQL to run it through the safety layer. Risky writes show their
 blast radius and ask before executing; allowed reads/writes just run.
@@ -226,14 +227,14 @@ You write the SQL, so a block is advice, not a wall: \\override runs it anyway
 (audited, and still undoable when the statement's shape allows)."""
 
 
-# --- the Human Mode loop -----------------------------------------------------
+# --- the optional local SQL console loop -------------------------------------
 
 
 async def human_mode(sess: GuardedSession, policy: Policy) -> None:
     console.print(
         Panel(
             Text.from_markup(
-                "[bold]Human Mode[/bold] — you write SQL, the safety layer has "
+                "[bold]Local SQL console[/bold] — you write SQL, Interdict has "
                 "your back.\nEvery destructive write is simulated and shown "
                 "before it runs. [dim]\\help for commands.[/dim]"
             ),
@@ -245,7 +246,9 @@ async def human_mode(sess: GuardedSession, policy: Policy) -> None:
 
     while True:
         try:
-            raw = Prompt.ask("[bold green]agentdb[/bold green] [dim]▸[/dim]").strip()
+            raw = Prompt.ask(
+                "[bold green]interdict[/bold green] [dim]▸[/dim]"
+            ).strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]bye[/dim]")
             return
@@ -386,31 +389,27 @@ async def _do_revert(sess, history, raw) -> None:
         console.print(f"[red]revert failed:[/red] {result.error}")
 
 
-# --- landing screen + wiring -------------------------------------------------
+# --- optional local TUI wiring ----------------------------------------------
 
 
 def _agent_mode_help() -> None:
     snippet = (
-        '{\n'
-        '  "mcpServers": {\n'
-        '    "agentdb": {\n'
-        '      "command": "python",\n'
-        '      "args": ["-m", "adapters.mcp_server"]\n'
-        '    }\n'
-        '  }\n'
-        '}'
+        "codex mcp add interdict \\\n"
+        "  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \\\n"
+        "  -- interdict"
     )
     console.print(
         Panel(
             Text.from_markup(
-                "[bold]Agent Mode[/bold] — your AI agent writes the SQL; the "
-                "safety layer guards it.\n\nPoint your MCP client (Claude Code, "
-                "Cursor, …) at the server below, then drive it from the agent. "
-                "Same engine, same guarantees as Human Mode.\n\n"
+                "[bold]Agent layer[/bold] — this is the main Interdict use case."
+                "\n\nPoint your MCP client (Claude Code, Codex, Cursor, …) at "
+                "the server below. When the MCP server is connected, Interdict "
+                "is active for that chat; when it is not connected, it is "
+                "inactive.\n\n"
                 f"[dim]{snippet}[/dim]"
             ),
             border_style="magenta",
-            title="🤖 Agent Mode",
+            title="🤖 Agent layer",
             title_align="left",
         )
     )
@@ -430,7 +429,7 @@ async def _build_session() -> tuple[GuardedSession, Policy, asyncpg.Pool, AuditL
         undo_store=store,
         unique_columns=unique_columns,
         audit=audit,
-        # Human Mode: the person writing the SQL may deliberately override a
+        # Local TUI: the person writing the SQL may deliberately override a
         # block. The MCP/agent adapter never sets this, so agents cannot.
         allow_override=True,
     )
@@ -441,11 +440,10 @@ async def _amain() -> None:
     console.print(
         Panel(
             Text.from_markup(
-                "[bold cyan]agent-db-safety[/bold cyan]  "
-                "[dim]runtime safety layer for SQL[/dim]\n\n"
-                "Who is writing the SQL?\n"
-                "  [bold]1[/bold]  🤖  An agent writes SQL  [dim](MCP)[/dim]\n"
-                "  [bold]2[/bold]  ⌨   I write SQL          [dim](Human Mode)[/dim]"
+                "[bold cyan]Interdict[/bold cyan]  "
+                "[dim]runtime safety layer between AI agents and Postgres[/dim]\n\n"
+                "  [bold]1[/bold]  Configure the AI-agent MCP layer\n"
+                "  [bold]2[/bold]  Open optional local SQL console"
             ),
             border_style="cyan",
             title="welcome",
@@ -473,10 +471,10 @@ async def _amain() -> None:
 
 
 def main() -> None:
-    """Console-script entry point (`agentdb`).
+    """Console-script entry point (`interdict-tui`).
 
-    ``agentdb stats`` prints the savings summary and exits; ``agentdb`` with no
-    args opens the interactive landing screen.
+    ``interdict-stats`` prints the savings summary and exits; ``interdict-tui``
+    opens the optional local SQL console.
     """
     if sys.argv[1:2] == ["stats"]:
         render_stats(AUDIT_LOG_PATH)
@@ -485,6 +483,11 @@ def main() -> None:
         asyncio.run(_amain())
     except KeyboardInterrupt:
         pass
+
+
+def stats_main() -> None:
+    """Console-script entry point (`interdict-stats`)."""
+    render_stats(AUDIT_LOG_PATH)
 
 
 if __name__ == "__main__":

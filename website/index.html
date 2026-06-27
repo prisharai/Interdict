@@ -314,28 +314,28 @@ execute? [y/N]</code></pre>
         <!-- Quickstart -->
         <section id="quickstart" class="section">
           <div class="section-head">
-            <p class="eyebrow">get started</p>
-            <h2>Running locally in under a minute.</h2>
-            <p class="section-sub">Install the guardrail, then point your agent at the MCP server.</p>
+            <p class="eyebrow">start here</p>
+            <h2>Get comfortable on the bundled test database.</h2>
+            <p class="section-sub">Install Interdict, start the seeded Postgres fixture, connect Claude or Codex, then watch real agent prompts get allowed, held, undone, and blocked.</p>
           </div>
           <div class="runbook">
             <div class="runbook-tabs" role="tablist" aria-label="Setup steps">
               <button class="run-tab is-active" type="button" data-step="0">install</button>
-              <button class="run-tab" type="button" data-step="1">launch</button>
-              <button class="run-tab" type="button" data-step="2">agent mode</button>
-              <button class="run-tab" type="button" data-step="3">optional shell</button>
-              <button class="run-tab" type="button" data-step="4">verify</button>
+              <button class="run-tab" type="button" data-step="1">test db</button>
+              <button class="run-tab" type="button" data-step="2">connect</button>
+              <button class="run-tab" type="button" data-step="3">activate</button>
+              <button class="run-tab" type="button" data-step="4">practice</button>
             </div>
             <div class="runbook-panel">
               <div class="run-copy">
                 <p class="run-label" id="run-step-label">step 0</p>
                 <h3 id="run-step-title">Install Interdict</h3>
-                <p id="run-step-copy">Install the MCP server, or run the Docker app profile to get Postgres and the terminal UI together.</p>
+                <p id="run-step-copy">Install the MCP server your agent will call before touching Postgres.</p>
                 <div class="run-expected">
                   <span>what good looks like</span>
-                  <p id="run-step-expected">The interdict command is available for MCP, with agentdb kept as the optional local shell.</p>
+                  <p id="run-step-expected">The <code>interdict</code> command is available. This is the MCP layer for Claude, Codex, Cursor, or any MCP-capable agent.</p>
                 </div>
-                <p class="run-note" id="run-step-note">Docker alternative: docker compose --profile app run --rm app</p>
+                <p class="run-note" id="run-step-note">The PyPI package is <code>interdict-db</code>; the command users run is <code>interdict</code>.</p>
               </div>
               <div class="console run-command">
                 <div class="console-bar">
@@ -343,27 +343,58 @@ execute? [y/N]</code></pre>
                   <button class="copy-command" type="button">copy</button>
                 </div>
                 <pre><code id="run-step-code">pip install interdict-db
-# from source:
-pip install .</code></pre>
+
+# confirm the command exists
+interdict --help</code></pre>
               </div>
             </div>
           </div>
-          <div class="mode-grid">
-            <article class="mode">
-              <span class="tag">agent-first</span>
-              <h3>The model never touches Postgres directly.</h3>
-              <p>Claude Code or Codex calls <code>run_query</code>. Interdict decides before the database sees the statement.</p>
+          <div class="manual-grid">
+            <article class="manual-card">
+              <span class="tag">how to prompt</span>
+              <h3>Write normal product requests.</h3>
+              <p>Do not train users to say “use Interdict.” If Interdict is connected in the chat, database work inside larger Claude/Codex tasks should route through it automatically.</p>
             </article>
-            <article class="mode">
-              <span class="tag">operator gate</span>
-              <h3>Risky writes wait outside the model loop.</h3>
-              <p>Register the MCP server once. The model calls <code>run_query</code> instead of holding credentials, and approvals use an operator token it never sees.</p>
+            <article class="manual-card">
+              <span class="tag">how to know</span>
+              <h3>Ask whether it is active.</h3>
+              <p>Use <code>/mcp</code> in Codex, or ask the agent to call <code>interdict_status</code>. Active means this chat has the database safety layer connected.</p>
             </article>
-            <article class="mode">
-              <span class="tag">human shell</span>
-              <h3>Available when you want it.</h3>
-              <p>The same engine powers a local SQL shell with blast-radius confirms and undo, but the product is built around autonomous agent traffic.</p>
+            <article class="manual-card">
+              <span class="tag">how approvals work</span>
+              <h3>The model cannot approve itself.</h3>
+              <p>Large writes return an <code>approval_id</code> and wait. Approval is out-of-band with an operator token the agent should not see.</p>
             </article>
+          </div>
+
+          <div class="prompt-lab">
+            <div class="prompt-lab-head">
+              <p class="eyebrow">test prompts</p>
+              <h3>Paste these into Claude or Codex after MCP is connected.</h3>
+              <p>They use the bundled Pagila + large-table database so users can see the product behave before pointing it at anything real.</p>
+            </div>
+            <div class="prompt-grid">
+              <article class="prompt-card">
+                <span class="tag">allowed read</span>
+                <p>Find actor_id 1 in the test database and summarize the row. If database access is needed, use the active database safety layer.</p>
+                <small>Expected: allowed read, rows returned, no write.</small>
+              </article>
+              <article class="prompt-card">
+                <span class="tag">undoable write</span>
+                <p>For the demo database, update actor_id 1 by setting last_update = last_update, then show me the undo_action_id and revert it.</p>
+                <small>Expected: UPDATE 1, undo id, then successful revert.</small>
+              </article>
+              <article class="prompt-card">
+                <span class="tag">held write</span>
+                <p>Clean up metric_sample rows where sensor_id &lt;= 200. Do not approve anything. Tell me the blast radius and approval_id if it is held.</p>
+                <small>Expected: held for approval when impact cannot be safely bounded or exceeds confirmation policy.</small>
+              </article>
+              <article class="prompt-card">
+                <span class="tag">blocked write</span>
+                <p>Delete rows from metric_sample where sensor_id &lt;= 2000 and explain exactly why the safety layer blocked or held it.</p>
+                <small>Expected: blocked for <code>BLAST_RADIUS_EXCEEDED</code>; no rows deleted.</small>
+              </article>
+            </div>
           </div>
         </section>
 

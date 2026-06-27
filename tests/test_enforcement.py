@@ -169,6 +169,8 @@ async def test_risky_write_over_block_limit_is_blocked(make_session, scratch):
         "DELETE FROM _sim_scratch WHERE id <= 39", operator_approved=True
     )
     assert res["blocked"] is True
+    assert res["block_reason"] == "BLAST_RADIUS_EXCEEDED"
+    assert "over the limit" in res["block_message"]
     assert any(v["reason_code"] == "BLAST_RADIUS_EXCEEDED" for v in res["violations"])
     assert res["simulation"]["exact_rows"] == 39
     assert (

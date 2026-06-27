@@ -21,7 +21,7 @@ from engine.audit import AuditLog
 from engine.classifier import DDL, WRITE, classify
 from engine.intent import check_intent, llm_second_opinion
 from engine.policy import Policy, ReasonCode, apply_blast_radius, apply_intent, evaluate
-from engine.security import client_db_error, diagnostic_error
+from engine.security import client_db_error, diagnostic_error, redact_text
 from engine.simulate import is_risky_write, load_unique_columns, simulate
 from engine.undo import UndoStore, execute_with_undo, revert
 
@@ -43,6 +43,50 @@ POOL_MIN_SIZE = int(os.environ.get("AGENT_POOL_MIN", "1"))
 POOL_MAX_SIZE = int(os.environ.get("AGENT_POOL_MAX", "10"))
 OPERATOR_TOKEN = os.environ.get("AGENT_OPERATOR_TOKEN")
 MIN_OPERATOR_TOKEN_LENGTH = 32
+
+
+def _simulation_summary(simulation: dict | None) -> str:
+    if not simulation:
+        return "blast radius not measured"
+    if simulation.get("timed_out"):
+        return "blast radius unknown because simulation timed out"
+    rows = simulation.get("affected_rows")
+    if rows is None:
+        return "blast radius unknown"
+    return f"blast radius {rows:,} row(s)"
+
+
+def _blocked_summary(reason: str | None, message: str | None) -> str:
+    if reason and message:
+        return f"Interdict blocked this before Postgres: {reason} - {message}"
+    if reason:
+        return f"Interdict blocked this before Postgres: {reason}"
+    return "Interdict blocked this before Postgres."
+
+
+def _held_summary(approval_id: str, simulation: dict | None) -> str:
+    return (
+        "Interdict held this write for out-of-band approval: "
+        f"{_simulation_summary(simulation)}. approval_id={approval_id}"
+    )
+
+
+def _executed_summary(
+    status: str | None,
+    row_count: int,
+    error: str | None,
+    action_id: str | None,
+) -> str:
+    if error:
+        return f"Interdict allowed the statement, but Postgres returned: {error}"
+    if action_id:
+        return (
+            f"Interdict allowed and executed {status or 'the write'}. "
+            f"undo={action_id}"
+        )
+    if status:
+        return f"Interdict allowed and executed {status}. returned {row_count} row(s)."
+    return f"Interdict allowed the statement. returned {row_count} row(s)."
 
 
 @dataclass(frozen=True)
@@ -231,6 +275,12 @@ class ShadowSession:
 
         # Blocked + enforcing: reject without going near the database.
         if decision is not None and not decision.allowed and enforce:
+            violations = [v.to_dict() for v in decision.violations]
+            primary_violation = violations[0] if violations else None
+            block_reason = (
+                primary_violation["reason_code"] if primary_violation else None
+            )
+            block_message = primary_violation["message"] if primary_violation else None
             self._audit.record(
                 {
                     "event": "query",
@@ -238,7 +288,7 @@ class ShadowSession:
                     "stated_task": stated_task,
                     "sql": sql,
                     "blocked": True,
-                    "violations": [v.to_dict() for v in decision.violations],
+                    "violations": violations,
                     "simulation": decision.simulation,
                     "intent": decision.intent,
                     "classification": classification.to_dict(),
@@ -250,7 +300,10 @@ class ShadowSession:
                 "row_count": 0,
                 "error": None,
                 "blocked": True,
-                "violations": [v.to_dict() for v in decision.violations],
+                "summary": _blocked_summary(block_reason, block_message),
+                "block_reason": block_reason,
+                "block_message": block_message,
+                "violations": violations,
                 "requires_confirmation": False,
                 "simulation": decision.simulation,
                 "intent": decision.intent,
@@ -294,6 +347,7 @@ class ShadowSession:
                 "row_count": 0,
                 "error": None,
                 "blocked": False,
+                "summary": _held_summary(approval_id, decision.simulation),
                 "violations": [],
                 "requires_confirmation": True,
                 "approval_id": approval_id,
@@ -374,6 +428,11 @@ class ShadowSession:
                             "row_count": 0,
                             "error": None,
                             "blocked": True,
+                            "summary": _blocked_summary(
+                                violation["reason_code"], violation["message"]
+                            ),
+                            "block_reason": violation["reason_code"],
+                            "block_message": violation["message"],
                             "violations": [violation],
                             "requires_confirmation": False,
                             "simulation": (
@@ -430,6 +489,7 @@ class ShadowSession:
             "row_count": len(rows),
             "error": error,
             "blocked": False,
+            "summary": _executed_summary(status, len(rows), error, action_id),
             "violations": [],
             "requires_confirmation": False,
             "approval_id": None,
@@ -459,6 +519,10 @@ class ShadowSession:
             return {
                 "ok": False,
                 "approval_id": approval_id,
+                "summary": (
+                    "Interdict did not approve this write: operator token is "
+                    "missing or invalid."
+                ),
                 "error": "operator approval token is missing or invalid",
             }
         pending = self._pending_approvals.pop(approval_id, None)
@@ -466,6 +530,10 @@ class ShadowSession:
             return {
                 "ok": False,
                 "approval_id": approval_id,
+                "summary": (
+                    "Interdict did not approve this write: no pending approval "
+                    "exists for that id."
+                ),
                 "error": "no such pending approval",
             }
         self._audit.record(
@@ -499,7 +567,14 @@ class ShadowSession:
     ) -> dict[str, Any]:
         """Undo a previously-recorded write by its action id. Itself audited."""
         if self._undo_store is None:
-            return {"ok": False, "action_id": action_id, "error": "undo not enabled"}
+            return {
+                "ok": False,
+                "action_id": action_id,
+                "summary": (
+                    "Interdict could not revert this write: undo is not enabled."
+                ),
+                "error": "undo not enabled",
+            }
         operator_override = self._operator_allowed(operator_token)
         require_agent_match = (
             bool(self._policy and self._policy.undo.require_agent_match)
@@ -514,7 +589,17 @@ class ShadowSession:
                 require_agent_match=require_agent_match,
             )
         self._audit.record({"event": "revert", "agent": agent, **result.to_dict()})
-        return result.to_dict()
+        payload = result.to_dict()
+        if result.ok:
+            payload["summary"] = (
+                f"Interdict reverted {action_id}: restored "
+                f"{result.rows_restored} row(s)."
+            )
+        else:
+            payload["summary"] = (
+                f"Interdict could not revert {action_id}: {result.error}"
+            )
+        return payload
 
     def audit_status(self) -> dict[str, Any]:
         """Expose audit queue health so dropped records are visible."""
@@ -529,6 +614,22 @@ class AppContext:
     audit: AuditLog
     pool: asyncpg.Pool
     policy: Policy
+
+
+def _mcp_actor(ctx: Context) -> str:
+    """Return a stable actor identity for all tool calls in one MCP session."""
+    client_id = getattr(ctx, "client_id", None)
+    if client_id:
+        return str(client_id)
+
+    try:
+        session = ctx.session
+    except Exception:
+        session = None
+    if session is not None:
+        return f"mcp-session:{id(session)}"
+
+    return "mcp-client"
 
 
 @asynccontextmanager
@@ -579,6 +680,10 @@ async def run_query(
 ) -> dict[str, Any]:
     """Run a SQL statement against the database and return its result.
 
+    Use this tool for SQL/database work even when the user's request is nested
+    inside a larger task; the user does not need to say "use Interdict". If the
+    chat has this MCP server connected, Interdict is the database safety layer.
+
     The statement is parsed, classified, and checked against the deterministic
     policy. If it's blocked, the result has ``blocked=True`` and a ``violations``
     list explaining why and how to fix it -- the database is not touched. If it's
@@ -596,8 +701,7 @@ async def run_query(
     to ``revert_write`` to undo the change.
     """
     app: AppContext = ctx.request_context.lifespan_context
-    # MCP gives us a stable client/session id; use it as the agent identity.
-    agent = getattr(ctx, "client_id", None) or ctx.request_id
+    agent = _mcp_actor(ctx)
     return await app.session.run_query(sql, stated_task=stated_task, agent=agent)
 
 
@@ -613,7 +717,7 @@ async def approve_query(
     same token to be provided here. Without that token, risky writes remain held.
     """
     app: AppContext = ctx.request_context.lifespan_context
-    operator = getattr(ctx, "client_id", None) or ctx.request_id
+    operator = _mcp_actor(ctx)
     return await app.session.approve_query(
         approval_id, operator_token=operator_token, operator=operator
     )
@@ -640,7 +744,7 @@ async def revert_write(
     ``{ok, action_id, operation, rows_restored, error}``.
     """
     app: AppContext = ctx.request_context.lifespan_context
-    agent = getattr(ctx, "client_id", None) or ctx.request_id
+    agent = _mcp_actor(ctx)
     return await app.session.revert_write(
         action_id, agent=agent, operator_token=operator_token
     )
@@ -651,6 +755,29 @@ async def audit_status(ctx: Context) -> dict[str, Any]:
     """Return audit queue health, including dropped-record count."""
     app: AppContext = ctx.request_context.lifespan_context
     return app.session.audit_status()
+
+
+@mcp.tool()
+async def interdict_status(ctx: Context) -> dict[str, Any]:
+    """Show that Interdict is active in this chat and what database it guards."""
+    app: AppContext = ctx.request_context.lifespan_context
+    policy = app.policy
+    return {
+        "active": True,
+        "summary": (
+            "Interdict is active in this chat. Database operations should go "
+            "through the Interdict MCP tools before touching Postgres."
+        ),
+        "server": "interdict",
+        "actor": _mcp_actor(ctx),
+        "dsn": redact_text(DB_DSN),
+        "policy_path": POLICY_PATH,
+        "mode": policy.mode,
+        "allowed_tables": sorted(policy.allowed_tables or []),
+        "simulation_enabled": policy.simulation.enabled,
+        "undo_enabled": policy.undo.enabled,
+        "operator_approval_configured": bool(OPERATOR_TOKEN),
+    }
 
 
 def main() -> None:

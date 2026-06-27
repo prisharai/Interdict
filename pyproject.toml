@@ -27,7 +27,7 @@ dependencies = [
     "mcp>=1.28.0",
     "pyyaml>=6.0.3",
     "anthropic>=0.111.0",
-    # UI-only: the Human Mode terminal interface. NEVER imported by engine/ and
+    # UI-only: the optional local terminal interface. NEVER imported by engine/ and
     # never on the request path -- purely for rendering the interactive TUI.
     "rich>=13,<15",
 ]
@@ -36,10 +36,8 @@ dependencies = [
 # The MCP server an agent (Claude Code / Codex) launches over stdio.
 interdict = "adapters.mcp_server:main"
 interdict-demo = "examples.demo:cli_main"
-
-# Backward-compatible aliases for the terminal launcher and previous MCP name.
-agentdb = "adapters.tui:main"
-agentdb-mcp = "adapters.mcp_server:main"
+interdict-tui = "adapters.tui:main"
+interdict-stats = "adapters.tui:stats_main"
 
 [project.urls]
 Homepage = "https://interdict.vercel.app"
