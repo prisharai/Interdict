@@ -608,7 +608,6 @@ name = "interdict-db"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "anthropic" },
     { name = "asyncpg" },
     { name = "mcp" },
     { name = "pglast" },
@@ -620,6 +619,7 @@ bench = [
     { name = "hdrhistogram" },
 ]
 dev = [
+    { name = "anthropic" },
     { name = "black" },
     { name = "hdrhistogram" },
     { name = "matplotlib" },
@@ -635,7 +635,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.111.0" },
     { name = "asyncpg", specifier = ">=0.29,<0.31" },
     { name = "mcp", specifier = ">=1.28.0" },
     { name = "pglast", specifier = ">=6,<8" },
@@ -645,6 +644,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 bench = [{ name = "hdrhistogram", specifier = ">=0.10.7" }]
 dev = [
+    { name = "anthropic", specifier = ">=0.111.0" },
     { name = "black", specifier = ">=24,<26" },
     { name = "hdrhistogram", specifier = ">=0.10.7" },
     { name = "matplotlib", specifier = ">=3.11.0" },

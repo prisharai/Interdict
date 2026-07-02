@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import secrets
 import sys
@@ -17,6 +18,12 @@ from uuid import uuid4
 import asyncpg
 from mcp.server.fastmcp import Context, FastMCP
 
+from engine.approvals import (
+    APPROVED,
+    DEFAULT_TTL_SECONDS,
+    ApprovalStore,
+    token_hash,
+)
 from engine.audit import AuditLog
 from engine.classifier import DDL, WRITE, classify
 from engine.intent import check_intent, llm_second_opinion
@@ -41,7 +48,12 @@ DB_DSN = os.environ.get(
     "AGENT_DB_DSN",
     "postgresql://postgres:postgres@localhost:5433/pagila",
 )
-AUDIT_LOG_PATH = os.environ.get("AGENT_AUDIT_LOG", "logs/audit.jsonl")
+# Default to a stable per-user location: MCP clients launch this server from an
+# arbitrary cwd, so a relative default would scatter logs (or hide them).
+AUDIT_LOG_PATH = os.environ.get(
+    "AGENT_AUDIT_LOG",
+    str(Path.home() / ".interdict" / "audit.jsonl"),
+)
 # Policy file loaded once at startup (off the hot path). Defaults to the
 # repo's default policy.
 POLICY_PATH = os.environ.get(
@@ -54,6 +66,11 @@ POOL_MIN_SIZE = int(os.environ.get("AGENT_POOL_MIN", "1"))
 POOL_MAX_SIZE = int(os.environ.get("AGENT_POOL_MAX", "10"))
 OPERATOR_TOKEN = os.environ.get("AGENT_OPERATOR_TOKEN")
 MIN_OPERATOR_TOKEN_LENGTH = 32
+# How long a held write stays approvable. After this, its measured blast
+# radius is considered stale and the agent must re-run the query.
+APPROVAL_TTL_SECONDS = int(
+    os.environ.get("AGENT_APPROVAL_TTL_SECONDS", str(DEFAULT_TTL_SECONDS))
+)
 
 
 def _simulation_summary(simulation: dict | None) -> str:
@@ -78,7 +95,10 @@ def _blocked_summary(reason: str | None, message: str | None) -> str:
 def _held_summary(approval_id: str, simulation: dict | None) -> str:
     return (
         "Interdict held this write for out-of-band approval: "
-        f"{_simulation_summary(simulation)}. approval_id={approval_id}"
+        f"{_simulation_summary(simulation)}. approval_id={approval_id}. "
+        "Ask a human operator to run `interdict approve "
+        f"{approval_id}` in their terminal, then call "
+        f"run_approved_query(approval_id=\"{approval_id}\") to execute."
     )
 
 
@@ -100,19 +120,6 @@ def _executed_summary(
     return f"Interdict allowed the statement. returned {row_count} row(s)."
 
 
-@dataclass(frozen=True)
-class PendingApproval:
-    """A held write awaiting out-of-band operator approval."""
-
-    sql: str
-    stated_task: str | None
-    agent: str | None
-    created_at: float
-    simulation: dict | None
-    intent: dict | None
-    principal: dict
-
-
 class ShadowSession:
     """Execute a SQL statement, log the result, and return the response."""
 
@@ -125,6 +132,7 @@ class ShadowSession:
         llm_assessor=None,
         unique_columns: frozenset[str] = frozenset(),
         operator_token: str | None = None,
+        approval_store: ApprovalStore | None = None,
     ) -> None:
         self._pool = pool
         self._audit = audit
@@ -138,7 +146,13 @@ class ShadowSession:
         # opinion. None (default) => the LLM check never runs.
         self._llm_assessor = llm_assessor
         self._operator_token = operator_token
-        self._pending_approvals: dict[str, PendingApproval] = {}
+        # Held writes are persisted (sidecar schema) so a human can approve
+        # them from their own terminal -- the operator token never enters the
+        # agent chat. The store is the single source of truth for holds.
+        self._approvals = approval_store or ApprovalStore(
+            policy.undo.schema if policy else "adb_undo",
+            ttl_seconds=APPROVAL_TTL_SECONDS,
+        )
         self._bg_tasks: set[asyncio.Task] = set()
 
     def _operator_allowed(self, token: str | None) -> bool:
@@ -151,16 +165,25 @@ class ShadowSession:
             return False
         return secrets.compare_digest(token, self._operator_token)
 
-    def _approval_summary(self, approval_id: str, pending: PendingApproval) -> dict:
+    @staticmethod
+    def _approval_summary(row: dict[str, Any]) -> dict[str, Any]:
+        """Operator-safe view of a persisted hold (no token material)."""
+        simulation = row.get("simulation")
+        if isinstance(simulation, str):
+            simulation = json.loads(simulation)
+        principal = row.get("principal")
+        if isinstance(principal, str):
+            principal = json.loads(principal)
         return {
-            "approval_id": approval_id,
-            "sql": pending.sql,
-            "stated_task": pending.stated_task,
-            "agent": pending.agent,
-            "principal": pending.principal,
-            "created_at": pending.created_at,
-            "simulation": pending.simulation,
-            "intent": pending.intent,
+            "approval_id": str(row["approval_id"]),
+            "sql": row["sql"],
+            "stated_task": row.get("stated_task"),
+            "agent": row.get("agent"),
+            "principal": principal,
+            "created_at": (
+                row["created_at"].isoformat() if row.get("created_at") else None
+            ),
+            "simulation": simulation,
         }
 
     def _maybe_schedule_llm(
@@ -338,17 +361,26 @@ class ShadowSession:
             schema_decision = decision_from_legacy_policy(
                 decision, approval_id=approval_id
             ).to_dict()
-            self._pending_approvals[approval_id] = PendingApproval(
-                sql=sql,
-                stated_task=stated_task,
-                agent=agent,
-                created_at=time.time(),
-                simulation=decision.simulation,
-                intent=decision.intent,
-                principal=principal_from_legacy(
-                    agent, stated_task=stated_task
-                ).to_dict(),
-            )
+            # Persist the hold so a human can approve it out-of-band
+            # (`interdict approve <id>` in their own terminal). The token
+            # itself never enters the chat; only its hash is stored.
+            async with self._pool.acquire() as conn:
+                await self._approvals.create(
+                    conn,
+                    approval_id=approval_id,
+                    sql=sql,
+                    stated_task=stated_task,
+                    agent=agent,
+                    principal=principal_from_legacy(
+                        agent, stated_task=stated_task
+                    ).to_dict(),
+                    simulation=decision.simulation,
+                    operator_token_hash=(
+                        token_hash(self._operator_token)
+                        if self._operator_token
+                        else None
+                    ),
+                )
             self._audit.record(
                 {
                     "event": "query",
@@ -436,7 +468,9 @@ class ShadowSession:
                             explanation=violation["message"],
                             repair_hint=violation["suggested_fix"],
                             impact=(
-                                decision_from_legacy_policy(decision).impact
+                                decision_from_legacy_policy(
+                                    decision, confirmation_satisfied=True
+                                ).impact
                                 if decision is not None
                                 else None
                             ),
@@ -492,8 +526,12 @@ class ShadowSession:
             diagnostic = None
 
         elapsed_ms = (time.perf_counter() - started) * 1000.0
+        # Reaching this point means any hold was resolved: the operator approved
+        # the write, or observe mode ran it. Project the executed record as
+        # allow rather than re-raising the hold guard.
         schema_decision = decision_from_legacy_policy(
             decision,
+            confirmation_satisfied=True,
             undo_handle=action_id,
             reversible=reversible,
             undo_reason=undo_reason,
@@ -572,8 +610,15 @@ class ShadowSession:
                 "error": "operator approval token is missing or invalid",
                 "decision": schema_decision,
             }
-        pending = self._pending_approvals.pop(approval_id, None)
-        if pending is None:
+        async with self._pool.acquire() as conn:
+            granted = await self._approvals.decide(
+                conn,
+                approval_id,
+                approve=True,
+                operator_token_hash=token_hash(operator_token),
+                decided_by=operator or "operator",
+            )
+        if granted is None:
             schema_decision = SchemaDecision.deny(
                 reason_code=SchemaReasonCode.OPERATOR_APPROVAL_DENIED,
                 explanation="No pending approval exists for that id.",
@@ -591,30 +636,83 @@ class ShadowSession:
                 "error": "no such pending approval",
                 "decision": schema_decision,
             }
+        return await self.run_approved_query(approval_id, executor=operator)
+
+    async def run_approved_query(
+        self,
+        approval_id: str,
+        *,
+        executor: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute a hold that an operator has already approved out-of-band.
+
+        Takes no token: the authorization already happened (``interdict
+        approve`` from the operator's terminal, or ``approve_query``). The SQL
+        comes from the persisted hold -- the caller cannot substitute a
+        different statement. The approved->executed transition is atomic, so a
+        hold can only ever execute once.
+        """
+        async with self._pool.acquire() as conn:
+            row = await self._approvals.claim_approved(conn, approval_id)
+            if row is None:
+                current = await self._approvals.get(conn, approval_id)
+        if row is None:
+            status = current["status"] if current else "unknown"
+            if current is not None and current.get("expired") and status in (
+                "pending",
+                "approved",
+            ):
+                status = "expired"
+            hints = {
+                "pending": (
+                    "This write has not been approved yet. Ask a human "
+                    f"operator to run `interdict approve {approval_id}`."
+                ),
+                "denied": "An operator denied this write. Do not retry it.",
+                "executed": "This approval was already executed once.",
+                "expired": (
+                    "This hold expired: its measured blast radius is stale. "
+                    "Re-run the query to get a fresh measurement and a new "
+                    "approval_id."
+                ),
+                "unknown": "No approval exists for that id.",
+            }
+            schema_decision = SchemaDecision.deny(
+                reason_code=SchemaReasonCode.OPERATOR_APPROVAL_DENIED,
+                explanation=hints.get(status, hints["unknown"]),
+                repair_hint=hints.get(status, hints["unknown"]),
+            ).to_dict()
+            return {
+                "ok": False,
+                "approval_id": approval_id,
+                "summary": f"Interdict did not execute: {hints.get(status)}",
+                "error": f"approval status is {status}",
+                "decision": schema_decision,
+            }
         self._audit.record(
             {
-                "event": "approval_granted",
-                "operator": operator,
-                **self._approval_summary(approval_id, pending),
+                "event": "approval_executed",
+                "operator": row.get("decided_by"),
+                "executor": executor,
+                **self._approval_summary(row),
                 "principal": principal_from_legacy(
-                    operator, kind=PrincipalKind.HUMAN.value
+                    row.get("decided_by"), kind=PrincipalKind.HUMAN.value
                 ).to_dict(),
             }
         )
         result = await self.run_query(
-            pending.sql,
-            stated_task=pending.stated_task,
-            agent=pending.agent,
+            row["sql"],
+            stated_task=row.get("stated_task"),
+            agent=row.get("agent"),
             operator_approved=True,
         )
         return {"ok": result.get("error") is None, "approval_id": approval_id, **result}
 
-    def pending_approvals(self) -> list[dict[str, Any]]:
-        """Current in-memory held writes, safe to show to an operator."""
-        return [
-            self._approval_summary(approval_id, pending)
-            for approval_id, pending in self._pending_approvals.items()
-        ]
+    async def pending_approvals(self) -> list[dict[str, Any]]:
+        """Currently held writes (persisted), safe to show to an operator."""
+        async with self._pool.acquire() as conn:
+            rows = await self._approvals.list_pending(conn)
+        return [self._approval_summary(row) for row in rows]
 
     async def revert_write(
         self,
@@ -725,11 +823,16 @@ async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     audit = AuditLog(AUDIT_LOG_PATH)
     await audit.start()
     undo_store = UndoStore(policy.undo) if policy.undo.enabled else None
+    approval_store = ApprovalStore(
+        policy.undo.schema, ttl_seconds=APPROVAL_TTL_SECONDS
+    )
     # Load the unique/PK column metadata once, off the hot path (sec. 4): it lets
     # a point write by a unique key skip simulation while a bulk write on a
-    # non-unique column is still simulated.
+    # non-unique column is still simulated. Ensure the approvals table exists in
+    # the same round trip (startup-only DDL).
     async with pool.acquire() as conn:
         unique_columns = await load_unique_columns(conn)
+        await approval_store.ensure_schema(conn)
     try:
         yield AppContext(
             session=ShadowSession(
@@ -739,6 +842,7 @@ async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
                 undo_store,
                 unique_columns=unique_columns,
                 operator_token=OPERATOR_TOKEN,
+                approval_store=approval_store,
             ),
             audit=audit,
             pool=pool,
@@ -773,9 +877,12 @@ async def run_query(
     exceeds the confirm threshold the result has ``requires_confirmation=True``
     and a ``simulation`` summary (e.g. "would affect 2.3M rows") and the write is
     held. There is deliberately no agent-facing way to approve it -- an agent
-    confirming its own write is not human confirmation; approval is out-of-band
-    (Day 6). ``stated_task`` is the agent's description of what it's doing --
-    captured for intent-mismatch detection later (sec. 10); advisory.
+    confirming its own write is not human confirmation. Tell the user to run
+    ``interdict approve <approval_id>`` in their own terminal, then call
+    ``run_approved_query(approval_id)`` to execute the approved write. Never
+    ask the user for the operator token; it must not appear in this chat.
+    ``stated_task`` is the agent's description of what it's doing -- captured
+    for intent-mismatch detection later (sec. 10); advisory.
 
     When a write is reversible, the result carries ``undo_action_id`` -- pass it
     to ``revert_write`` to undo the change.
@@ -786,28 +893,28 @@ async def run_query(
 
 
 @mcp.tool()
-async def approve_query(
+async def run_approved_query(
     approval_id: str,
-    operator_token: str,
     ctx: Context,
 ) -> dict[str, Any]:
-    """Approve and execute a held write.
+    """Execute a held write after a human has approved it out-of-band.
 
-    This tool requires ``AGENT_OPERATOR_TOKEN`` to be set on the server and the
-    same token to be provided here. Without that token, risky writes remain held.
+    Takes no token. A held write is approved by a human running ``interdict
+    approve <approval_id>`` in their own terminal (never by pasting a token
+    into this chat). Once approved, this tool executes the exact statement
+    that was held -- it cannot run anything else, and it can only run once.
     """
     app: AppContext = ctx.request_context.lifespan_context
-    operator = _mcp_actor(ctx)
-    return await app.session.approve_query(
-        approval_id, operator_token=operator_token, operator=operator
+    return await app.session.run_approved_query(
+        approval_id, executor=_mcp_actor(ctx)
     )
 
 
 @mcp.tool()
 async def list_pending_approvals(ctx: Context) -> dict[str, Any]:
-    """List currently held writes awaiting operator approval."""
+    """List currently held writes awaiting out-of-band operator approval."""
     app: AppContext = ctx.request_context.lifespan_context
-    return {"pending": app.session.pending_approvals()}
+    return {"pending": await app.session.pending_approvals()}
 
 
 @mcp.tool()
@@ -830,16 +937,20 @@ async def revert_write(
     )
 
 
-@mcp.tool()
-async def audit_status(ctx: Context) -> dict[str, Any]:
-    """Return audit queue health, including dropped-record count."""
-    app: AppContext = ctx.request_context.lifespan_context
-    return app.session.audit_status()
+def _package_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("interdict-db")
+    except PackageNotFoundError:
+        return "source"
 
 
 @mcp.tool()
 async def interdict_status(ctx: Context) -> dict[str, Any]:
-    """Show that Interdict is active in this chat and what database it guards."""
+    """Report Interdict's full status: active/guarded database, policy in
+    force, and audit-trail health. This is the single status tool -- use it to
+    verify Interdict is protecting this chat."""
     app: AppContext = ctx.request_context.lifespan_context
     policy = app.policy
     return {
@@ -849,6 +960,7 @@ async def interdict_status(ctx: Context) -> dict[str, Any]:
             "through the Interdict MCP tools before touching Postgres."
         ),
         "server": "interdict",
+        "version": _package_version(),
         "actor": _mcp_actor(ctx),
         "dsn": redact_text(DB_DSN),
         "policy_path": POLICY_PATH,
@@ -857,22 +969,176 @@ async def interdict_status(ctx: Context) -> dict[str, Any]:
         "simulation_enabled": policy.simulation.enabled,
         "undo_enabled": policy.undo.enabled,
         "operator_approval_configured": bool(OPERATOR_TOKEN),
+        "audit": app.session.audit_status(),
     }
+
+
+def _preflight() -> None:
+    """Fail fast, with one clear line, before speaking MCP.
+
+    Runs once at startup (never on the query path). Everything user-facing goes
+    to stderr: stdout is the MCP protocol channel and must stay clean.
+    """
+    if "AGENT_DB_DSN" not in os.environ:
+        print(
+            "interdict: AGENT_DB_DSN is not set; using the dev default "
+            f"({redact_text(DB_DSN)}). Point it at your database with "
+            "AGENT_DB_DSN=postgresql://user:pass@host:5432/dbname",
+            file=sys.stderr,
+        )
+
+    try:
+        Policy.load(POLICY_PATH)
+    except Exception as exc:
+        print(
+            f"interdict: cannot load policy {POLICY_PATH}: {exc}\n"
+            "Fix the YAML or unset AGENT_POLICY to use the built-in default.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+
+    async def _check_db() -> None:
+        conn = await asyncpg.connect(dsn=DB_DSN, timeout=5)
+        await conn.close()
+
+    try:
+        asyncio.run(_check_db())
+    except Exception as exc:
+        print(
+            f"interdict: cannot reach Postgres at {redact_text(DB_DSN)}: {exc}\n"
+            "Check that the database is running and AGENT_DB_DSN is correct.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from exc
+
+    if not OPERATOR_TOKEN:
+        print(
+            "interdict: AGENT_OPERATOR_TOKEN is not set -- held writes cannot "
+            "be approved this session (they stay blocked, which is safe). Set "
+            "a random token of 32+ chars to enable out-of-band approval.",
+            file=sys.stderr,
+        )
+    elif len(OPERATOR_TOKEN) < MIN_OPERATOR_TOKEN_LENGTH:
+        print(
+            f"interdict: AGENT_OPERATOR_TOKEN is shorter than "
+            f"{MIN_OPERATOR_TOKEN_LENGTH} chars and will be rejected -- "
+            "approvals are effectively disabled until it is lengthened.",
+            file=sys.stderr,
+        )
+
+    print(
+        f"interdict: ready -- guarding {redact_text(DB_DSN)} "
+        f"(policy: {POLICY_PATH}, audit: {AUDIT_LOG_PATH})",
+        file=sys.stderr,
+    )
+
+
+_USAGE = """Usage:
+  interdict                     Run the MCP server over stdio (agent-facing)
+  interdict pending             List writes held for approval
+  interdict approve <id>        Approve a held write (agent then executes it)
+  interdict deny <id>           Deny a held write
+  interdict --version           Print version
+
+Environment:
+  AGENT_DB_DSN             Postgres DSN to protect
+  AGENT_OPERATOR_TOKEN     Token required for operator approvals
+  AGENT_POLICY             YAML policy path
+  AGENT_AUDIT_LOG          JSONL audit log path
+
+Approving is done here, in YOUR terminal, on purpose: the agent never sees
+the operator token. After you approve, the agent runs the write by calling
+run_approved_query(approval_id)."""
+
+
+def _operator_cli(argv: list[str]) -> int:
+    """Human-side approval commands. Runs in the operator's own terminal."""
+    command, args = argv[0], argv[1:]
+    store = ApprovalStore(
+        Policy.load(POLICY_PATH).undo.schema, ttl_seconds=APPROVAL_TTL_SECONDS
+    )
+
+    async def _run() -> int:
+        conn = await asyncpg.connect(dsn=DB_DSN, timeout=5)
+        try:
+            if command == "pending":
+                rows = await store.list_pending(conn)
+                if not rows:
+                    print("No writes are waiting for approval.")
+                    return 0
+                for row in rows:
+                    sim = row.get("simulation")
+                    print(f"{row['approval_id']}  [{row['created_at']:%H:%M:%S}]")
+                    print(f"  sql:  {row['sql']}")
+                    if row.get("stated_task"):
+                        print(f"  task: {row['stated_task']}")
+                    if isinstance(sim, str):
+                        sim = json.loads(sim)
+                    print(f"  {_simulation_summary(sim)}")
+                return 0
+
+            # approve / deny need the token and an id.
+            if not args:
+                print(f"interdict {command}: missing <approval_id>", file=sys.stderr)
+                return 2
+            if not OPERATOR_TOKEN or len(OPERATOR_TOKEN) < MIN_OPERATOR_TOKEN_LENGTH:
+                print(
+                    "interdict: AGENT_OPERATOR_TOKEN must be set in this shell "
+                    "(32+ chars) and match the server's token.",
+                    file=sys.stderr,
+                )
+                return 2
+            approval_id = args[0]
+            decided = await store.decide(
+                conn,
+                approval_id,
+                approve=(command == "approve"),
+                operator_token_hash=token_hash(OPERATOR_TOKEN),
+                decided_by=os.environ.get("USER", "operator"),
+            )
+            if decided is None:
+                print(
+                    f"interdict: could not {command} {approval_id}: no pending "
+                    "approval matches that id and this token.",
+                    file=sys.stderr,
+                )
+                return 1
+            if decided == APPROVED:
+                print(
+                    f"Approved {approval_id}. The agent can now execute it with "
+                    f"run_approved_query(approval_id=\"{approval_id}\")."
+                )
+            else:
+                print(f"Denied {approval_id}. It will not run.")
+            return 0
+        finally:
+            await conn.close()
+
+    try:
+        return asyncio.run(_run())
+    except Exception as exc:
+        print(
+            f"interdict: cannot reach Postgres at {redact_text(DB_DSN)}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
 
 
 def main() -> None:
     """Entry point: run the MCP server over stdio (the standard MCP transport)."""
-    if any(arg in {"-h", "--help"} for arg in sys.argv[1:]):
-        print(
-            "Usage: interdict\n\n"
-            "Run the Interdict MCP server over stdio.\n\n"
-            "Environment:\n"
-            "  AGENT_DB_DSN             Postgres DSN to protect\n"
-            "  AGENT_OPERATOR_TOKEN     Token required for operator approvals\n"
-            "  AGENT_POLICY             YAML policy path\n"
-            "  AGENT_AUDIT_LOG          JSONL audit log path"
-        )
+    argv = sys.argv[1:]
+    if any(arg in {"-h", "--help"} for arg in argv):
+        print(_USAGE)
         return
+    if "--version" in argv:
+        print(f"interdict {_package_version()}")
+        return
+    if argv and argv[0] in {"pending", "approve", "deny"}:
+        raise SystemExit(_operator_cli(argv))
+    if argv:
+        print(f"interdict: unknown command {argv[0]!r}\n\n{_USAGE}", file=sys.stderr)
+        raise SystemExit(2)
+    _preflight()
     mcp.run()
 
 

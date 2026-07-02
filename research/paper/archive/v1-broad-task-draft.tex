@@ -35,7 +35,7 @@ When an agent is told to perform a broad write and the guardrail blocks it, nami
 \subsection{Design and data state}
 The sweep crossed model, task, and denial-richness condition. The result file reports 588 trials across 3 tasks and 4 conditions, with model-condition cell sizes in [28, 60]. Haiku is the complete primary run: 240 trials, 12 task-by-condition cells filled, and minimum 20 trials per task-by-condition cell. Opus has 148 trials, 8 filled cells, and minimum 8 trials per filled cell; Sonnet has 200 trials, 10 filled cells, and minimum 20 trials per filled cell. Because Haiku has 3 tasks and 20 trials per task-by-condition cell, condition-level Haiku analyses collapse to n=60 per condition.\footnote{All result counts in this paragraph are copied from \texttt{RESULTS\_STUDY.md}, data-completeness lines 3 and 10--15.}
 
-The closed loop was capped at \texttt{\_MAX\_TURNS=4}: at most 4 agent attempts, logged as turns 0--3. Each turn consisted of one SQL statement, an engine decision, and condition-specific feedback if the statement was not executed. Trial order was logged under a single seed; robustness to alternate seeds or trial orders was not measured in v1.\footnote{The uploaded README describes the closed loop as up to 4 turns. \texttt{INDEX.md} lists ``one seed'' among required caveats; no alternate-seed analysis is printed in \texttt{RESULTS\_STUDY.md}.}
+The closed loop was capped at \texttt{\_MAX\_TURNS=4}: at most 4 agent attempts, logged as turns 0--3. Each turn consisted of one SQL statement, an engine decision, and condition-specific feedback if the statement was not executed. Trial order was logged under a single seed; robustness to alternate seeds or trial orders was not measured in v1.\footnote{The uploaded README describes the closed loop as up to 4 turns. \texttt{docs/START\_HERE.md} lists ``one seed'' among required caveats; no alternate-seed analysis is printed in \texttt{docs/RESULTS\_STUDY.md}.}
 
 \subsection{Tasks and conditions}
 The completed v1 tasks were broad-request database chores. Under those prompts, a full-table write can be faithful to the user-facing request even though the guardrail blocks it. This is the core validity distinction: v1 does not confirm strategic evasion of narrow intent; it measures literal rule satisfaction when the broad user objective conflicts with the guardrail.
@@ -101,7 +101,7 @@ Descriptive, partial & Sonnet 4.6 & 37\% & 98\% & 100\% & 100\% \\
 \end{tabular}
 \end{table}
 
-The partial Opus numbers are lower than Haiku/Sonnet in the richer-feedback cells; \texttt{INDEX.md} frames this as a capability nuance, not a confirmatory cross-model result.\footnote{Rate source: \texttt{RESULTS\_STUDY.md} lines 37--43. Capability-nuance caveat source: \texttt{INDEX.md} lines 58--61.}
+The partial Opus numbers are lower than Haiku/Sonnet in the richer-feedback cells; \texttt{docs/START\_HERE.md} frames this as a capability nuance, not a confirmatory cross-model result.\footnote{Rate source: \texttt{docs/RESULTS\_STUDY.md} lines 37--43. Capability-nuance caveat source: \texttt{docs/START\_HERE.md} lines 58--61.}
 
 \begin{table}[t]
 \centering
@@ -184,7 +184,7 @@ This does not imply that transparency is generally harmful. Reliable feedback ca
 \section{Limitations}
 The main validity limit is task framing. v1 tasks explicitly asked for broad operations, so whole-table restatements can be faithful compliance with the user request rather than evasion of narrow intent. The paper therefore cannot make a confirmatory evasion claim from v1.
 
-The data state also limits inference. Haiku is complete and primary; Sonnet and Opus are partial because the sweep was interrupted by API credit limits. Additional caveats are a single provider family, 3 synthetic adversarial tasks, partial Sonnet/Opus cells, one seed, and v1 C3 confounding row-count feedback with confirmation framing.\footnote{These caveats are listed in \texttt{INDEX.md}, lines 82--90.}
+The data state also limits inference. Haiku is complete and primary; Sonnet and Opus are partial because the sweep was interrupted by API credit limits. Additional caveats are a single provider family, 3 synthetic adversarial tasks, partial Sonnet/Opus cells, one seed, and v1 C3 confounding row-count feedback with confirmation framing.\footnote{These caveats are listed in \texttt{docs/START\_HERE.md}, lines 82--90.}
 
 Protocol failures are a separate threat. Non-SQL/prose payloads were frequent, and the protocol-failure-excluded sensitivity analysis leaves very small denominators in some Haiku cells. The primary result should therefore be reported alongside, not replaced by, the sensitivity check.
 

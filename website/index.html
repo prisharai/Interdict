@@ -6,7 +6,7 @@
     <title>Interdict — the runtime layer between AI agents and Postgres</title>
     <meta
       name="description"
-      content="Interdict sits between AI agents and Postgres: it previews blast radius, blocks dangerous writes, and records one-command undo."
+      content="Interdict sits between AI agents and Postgres: it previews blast radius, blocks dangerous writes, requires out-of-band approval, and records undo."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -106,7 +106,7 @@
           <span class="enter-label">Enter</span>
         </button>
       </div>
-      <div class="gate-foot" aria-hidden="true">ai agent guardrail&nbsp;·&nbsp;blast-radius preview&nbsp;·&nbsp;instant undo</div>
+      <div class="gate-foot" aria-hidden="true">ai agent guardrail&nbsp;·&nbsp;out-of-band approval&nbsp;·&nbsp;instant undo</div>
     </section>
 
     <!-- ─── Site ─────────────────────────────────────────── -->
@@ -145,6 +145,8 @@
               Interdict is built for the moment an autonomous agent is about to
               touch production data. It parses every statement, measures the real
               blast radius, then allows, holds, or blocks before Postgres is touched.
+              Humans approve held writes from their own terminal, so approval
+              tokens never enter the agent chat.
             </p>
             <div class="action-row reveal" style="--i:3">
               <a class="button primary" href="#quickstart">Run it locally</a>
@@ -153,7 +155,7 @@
             <ul class="hero-facts reveal" style="--i:4">
               <li><b>first</b> agent-native runtime layer for SQL blast radius + undo</li>
               <li><b>~0&nbsp;ms</b> added latency on the safe path</li>
-              <li><b>588</b> agent trials in the recovery/evasion study</li>
+              <li><b>330</b> automated tests covering policy, approval, TTL, and undo</li>
             </ul>
           </div>
 
@@ -170,7 +172,7 @@
               <span class="core-ring"></span>
               <span class="core-ring"></span>
               <strong>Interdict</strong>
-              <em>parse · simulate · decide · undo</em>
+              <em>parse · simulate · approve · undo</em>
             </div>
             <div class="layer-flow reverse" aria-hidden="true">
               <span></span><span></span><span></span>
@@ -229,7 +231,7 @@ every row in <span class="lav">users</span>.
           <div class="section-head">
             <p class="eyebrow">see it work</p>
             <h2>Three things you'll watch it do.</h2>
-            <p class="section-sub">Block a dangerous write, preview a write's true size, and undo a committed one.</p>
+            <p class="section-sub">Block a dangerous write, hold a risky one for human approval, and undo a committed change.</p>
           </div>
           <div class="moment-grid">
             <article class="console moment-card">
@@ -247,16 +249,18 @@ fix: add WHERE id = … or a scope</code></pre>
             <article class="console moment-card featured">
               <div class="console-bar">
                 <span class="console-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span class="console-title">2 · it shows the blast radius</span>
+                <span class="console-title">2 · it holds for human approval</span>
               </div>
               <pre><code><span class="prompt">agent.run_query</span> DELETE FROM clients
           WHERE active = true;
 
-<span class="warn">confirm write</span>
+<span class="warn">held for approval</span>
 blast radius:  <span class="good">2,300,000 rows</span>  (precise)
-reversible:    yes — undo id kept
+approval_id:   8f41...
+expires:       30 minutes
 
-execute? [y/N]</code></pre>
+human runs:    interdict approve 8f41...
+agent calls:   run_approved_query(8f41...)</code></pre>
             </article>
             <article class="console moment-card">
               <div class="console-bar">
@@ -299,14 +303,14 @@ execute? [y/N]</code></pre>
             <li class="step">
               <span class="step-number">四</span>
               <h3>Decide</h3>
-              <p>Allow, hold for confirmation, or block with a fix — and record an undo path whenever the write can be safely reversed.</p>
+              <p>Allow, hold for out-of-band approval, or block with a fix — and record an undo path whenever the write can be safely reversed.</p>
             </li>
           </ol>
 
           <div class="feature-band">
             <article class="feature"><h3>Blast-radius preview</h3><p>Impact is measured against the live database, not inferred from the SQL text.</p></article>
             <article class="feature"><h3>Instant undo</h3><p>Reverse one bad action by id — no full restore, no collateral data loss.</p></article>
-            <article class="feature"><h3>Structured rejection</h3><p>Agents get reason codes and fixes they can reason over without direct database credentials.</p></article>
+            <article class="feature"><h3>Human approval boundary</h3><p>Held writes are approved from the operator's terminal; tokens never pass through chat.</p></article>
             <article class="feature"><h3>Negligible overhead</h3><p>Deterministic checks run in microseconds; the benchmark reports ~0&nbsp;ms end to end.</p></article>
           </div>
         </section>
@@ -316,7 +320,7 @@ execute? [y/N]</code></pre>
           <div class="section-head">
             <p class="eyebrow">start here</p>
             <h2>Get comfortable on the bundled test database.</h2>
-            <p class="section-sub">Install Interdict, start the seeded Postgres fixture, connect Claude or Codex, then watch real agent prompts get allowed, held, undone, and blocked.</p>
+            <p class="section-sub">Install Interdict, start the seeded Postgres fixture, connect Claude or Codex, then watch real agent prompts get allowed, held, approved out-of-band, undone, and blocked.</p>
           </div>
           <div class="runbook">
             <div class="runbook-tabs" role="tablist" aria-label="Setup steps">
@@ -363,7 +367,7 @@ interdict --help</code></pre>
             <article class="manual-card">
               <span class="tag">how approvals work</span>
               <h3>The model cannot approve itself.</h3>
-              <p>Large writes return an <code>approval_id</code> and wait. Approval is out-of-band with an operator token the agent should not see.</p>
+              <p>Large writes return an <code>approval_id</code> and wait. A human runs <code>interdict approve &lt;id&gt;</code>, then the agent calls <code>run_approved_query</code>. Holds expire after 30 minutes.</p>
             </article>
           </div>
 
@@ -387,7 +391,7 @@ interdict --help</code></pre>
               <article class="prompt-card">
                 <span class="tag">held write</span>
                 <p>Clean up metric_sample rows where sensor_id &lt;= 200. Do not approve anything. Tell me the blast radius and approval_id if it is held.</p>
-                <small>Expected: held for approval when impact cannot be safely bounded or exceeds confirmation policy.</small>
+                <small>Expected: held with an <code>approval_id</code>; no token appears in chat.</small>
               </article>
               <article class="prompt-card">
                 <span class="tag">blocked write</span>
@@ -405,9 +409,9 @@ interdict --help</code></pre>
             <h2>What it measures, measured locally.</h2>
           </div>
           <div class="metric-grid">
-            <article class="metric"><span>agent trials</span><strong>588</strong><p>Closed-loop recovery/evasion study across 3 tasks, 4 conditions, and 3 Claude model families.</p></article>
-            <article class="metric"><span>denial trigger rate</span><strong>99%</strong><p>Bulk-request tasks reliably hit the guardrail instead of silently executing broad writes.</p></article>
-            <article class="metric"><span>automated tests</span><strong>311</strong><p>Parser behavior, policy, simulation, audit redaction, undo, MCP enforcement, and terminal mode.</p></article>
+            <article class="metric"><span>automated tests</span><strong>330</strong><p>Parser behavior, policy, simulation, approvals, TTL, audit redaction, undo, MCP enforcement, and terminal mode.</p></article>
+            <article class="metric"><span>approval token exposure</span><strong>0</strong><p>Humans approve from their own terminal; the operator token never enters the agent chat.</p></article>
+            <article class="metric"><span>approval lifetime</span><strong>30m</strong><p>Held writes expire by default, forcing a fresh blast-radius measurement before approval.</p></article>
             <article class="metric"><span>red-corpus false negatives</span><strong>0%</strong><p>Dangerous SQL was fully blocked locally; green-corpus false positives were 0% too.</p></article>
           </div>
         </section>
@@ -418,7 +422,7 @@ interdict --help</code></pre>
             <div class="status-copy">
               <p class="eyebrow">where it stands</p>
               <h2>The first agent-native safety layer for database writes.</h2>
-              <p>Not a dashboard. Not an ORM. Interdict is a runtime guardrail placed directly between AI agents and Postgres, built around deterministic checks, latency budgets, auditability, and fail-closed writes.</p>
+              <p>Not a dashboard. Not an ORM. Interdict is a runtime guardrail placed directly between AI agents and Postgres, built around deterministic checks, latency budgets, auditability, out-of-band human approval, and fail-closed writes.</p>
             </div>
             <div class="status-actions">
               <a class="button primary" href="mailto:pr482@cornell.edu?subject=Interdict%20access">Request access</a>

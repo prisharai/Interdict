@@ -26,7 +26,6 @@ dependencies = [
     "asyncpg>=0.29,<0.31",
     "mcp>=1.28.0",
     "pyyaml>=6.0.3",
-    "anthropic>=0.111.0",
 ]
 
 [project.scripts]
@@ -51,8 +50,9 @@ dev = [
     "ruff>=0.5,<1.0",
     "black>=24,<26",
     "sqlalchemy>=2.0.51",
-    # Research-only: cross-provider agent backend for the study harness. Never
-    # imported by engine/ or adapters/ -- only research/agents.py:OpenAIAgent.
+    # Research-only: LLM provider SDKs for the study harness. Never imported by
+    # engine/ or adapters/ -- only research/agents.py (both lazily).
+    "anthropic>=0.111.0",
     "openai>=1.40",
     "pandas>=3.0.3",
     "statsmodels>=0.14.6",

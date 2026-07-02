@@ -103,8 +103,17 @@ AGENT_OPERATOR_TOKEN = "paste-a-random-token-at-least-32-chars"
 To check whether Interdict is active in the current chat, ask the agent to call
 `interdict_status`.
 
-A held write is approved out-of-band with `approve_query` and the operator
-token, which the agent should not see.
+A held write is approved out-of-band: the agent reports the `approval_id`, the
+human runs `interdict approve <approval_id>` in their own terminal with
+`AGENT_DB_DSN` and `AGENT_OPERATOR_TOKEN` set in that shell, and then the agent
+calls `run_approved_query(approval_id)`. The operator token never appears in the
+chat. Holds expire after 30 minutes by default.
+
+```bash
+interdict pending
+interdict approve <approval_id>
+interdict deny <approval_id>
+```
 
 ### 3. Set up the dev database
 
@@ -175,9 +184,10 @@ Environment variables (used by both modes):
 | Variable | Default | Purpose |
 |---|---|---|
 | `AGENT_DB_DSN` | `postgresql://postgres:postgres@localhost:5433/pagila` | Target Postgres. Default is local-dev only. |
-| `AGENT_POLICY` | `policies/default.yaml` | YAML policy loaded at startup. |
-| `AGENT_AUDIT_LOG` | `logs/audit.jsonl` | Async JSONL audit log (also feeds `\stats`). Raw SQL/task text is redacted; hashes are kept for correlation. |
-| `AGENT_OPERATOR_TOKEN` | unset | Required to approve held writes via MCP. Must be a random token of at least 32 characters. |
+| `AGENT_POLICY` | `policies/default.yaml` | YAML policy loaded at startup. Interdict ships with a database-agnostic default policy; see `policies/pagila.yaml` for a locked-down demo policy tuned to the Pagila dataset. |
+| `AGENT_AUDIT_LOG` | `~/.interdict/audit.jsonl` | Async JSONL audit log (also feeds `\stats`). Raw SQL/task text is redacted; hashes are kept for correlation. |
+| `AGENT_OPERATOR_TOKEN` | unset | Required by the operator CLI to approve held writes. Must be a random token of at least 32 characters. |
+| `AGENT_APPROVAL_TTL_SECONDS` | `1800` | How long a held write stays approvable. After this the hold expires and the agent must re-run the query so the blast radius is re-measured. |
 | `AGENT_POOL_MIN` / `AGENT_POOL_MAX` | `1` / `10` | asyncpg pool sizing. |
 
 MCP tools the server exposes:
@@ -186,9 +196,9 @@ MCP tools the server exposes:
 |---|---|
 | `run_query(sql, stated_task?)` | Classify, policy-check, simulate if risky, then execute or block. |
 | `list_pending_approvals()` | Writes currently held for operator approval. |
-| `approve_query(approval_id, operator_token)` | Execute a held write when the token matches. |
+| `run_approved_query(approval_id)` | Execute a held write after out-of-band approval -- takes no token. |
 | `revert_write(action_id, operator_token?)` | Revert a recorded write. |
-| `audit_status()` | Audit queue depth, dropped-record count, log path. |
+| `interdict_status()` | Verify Interdict is active: guarded DSN, policy in force, audit-trail health. |
 
 ## Honest limits
 
@@ -204,7 +214,7 @@ Kept visible on purpose:
   Shapes that can't be recorded for safe undo are blocked by default;
   local evaluation can opt out with `undo.block_non_reversible: false`.
 - Audit logging is non-blocking: under overload it drops records rather than
-  stalling queries (`audit_status` reports this), and the local JSONL log isn't
+  stalling queries (`interdict_status` reports this under `audit`), and the local JSONL log isn't
   tamper-proof.
 - LLM intent checks are advisory only — never the last line of defense, never on
   the hot path.

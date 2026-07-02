@@ -13,6 +13,7 @@ import asyncpg
 import pytest
 
 from adapters.mcp_server import ShadowSession
+from engine.approvals import ApprovalStore, token_hash
 from engine.audit import AuditLog
 from engine.intent import IntentConfig
 from engine.policy import Policy
@@ -28,10 +29,24 @@ DB_DSN = os.environ.get(
 STRONG_OPERATOR_TOKEN = "test-operator-token-with-at-least-32-chars"
 
 
+def _q(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+async def _clear_pending_approvals(pool, schema: str = "adb_undo") -> None:
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval(
+            "SELECT to_regclass($1)", f"{schema}.pending_approval"
+        )
+        if exists:
+            await conn.execute(f"TRUNCATE TABLE {_q(schema)}.pending_approval")
+
+
 @pytest.fixture
 async def make_session(tmp_path):
     """Factory: build a ShadowSession with a given policy on the real pool."""
     pools = []
+    schemas = []
     audits = []
 
     async def _make(policy):
@@ -41,6 +56,8 @@ async def make_session(tmp_path):
             )
         except (OSError, asyncpg.PostgresError) as exc:
             pytest.skip(f"dev Postgres not reachable at {DB_DSN} ({exc})")
+        await _clear_pending_approvals(pool, policy.undo.schema)
+        schemas.append(policy.undo.schema)
         log = tmp_path / f"audit{len(pools)}.jsonl"
         audit = AuditLog(log)
         await audit.start()
@@ -53,6 +70,8 @@ async def make_session(tmp_path):
 
     for audit in audits:
         await audit.stop()
+    for pool, schema in zip(pools, schemas, strict=True):
+        await _clear_pending_approvals(pool, schema)
     for pool in pools:
         await pool.close()
 
@@ -104,8 +123,9 @@ async def test_observe_mode_logs_decision_but_still_runs(make_session):
     # ...but the recorded decision shows it WOULD have been blocked.
     await sess._audit.stop()  # flush
     entry = json.loads(log.read_text().splitlines()[-1])
-    assert entry["decision"]["allowed"] is False
-    assert entry["decision"]["violations"][0]["reason_code"] == "TABLE_NOT_ALLOWED"
+    decision = SchemaDecision.from_dict(entry["decision"])
+    assert decision.verdict == "deny"
+    assert decision.reason_code == SchemaReasonCode.TABLE_NOT_ALLOWED
 
 
 async def test_observe_mode_does_not_rewrite_live_reads(make_session):
@@ -161,7 +181,7 @@ async def test_risky_write_held_until_operator_approval(make_session, scratch):
     assert decision.reason_code == SchemaReasonCode.IMPACT_OVER_THRESHOLD
     assert decision.impact.rows_affected == 29
     assert decision.hold.approval_id == res["approval_id"]
-    pending = sess.pending_approvals()[0]
+    pending = (await sess.pending_approvals())[0]
     assert pending["principal"]["id"] == "anonymous"
     assert pending["principal"]["kind"] == "agent"
     assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
@@ -170,6 +190,246 @@ async def test_risky_write_held_until_operator_approval(make_session, scratch):
     res2 = await sess.run_query(sql, operator_approved=True)
     assert res2["requires_confirmation"] is False
     assert res2["status"] == "DELETE 29"
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 21
+
+
+async def test_approved_hold_runs_via_tokenless_approved_query(make_session, scratch):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+    approval_id = held["approval_id"]
+
+    async with scratch.transaction():
+        decided = await ApprovalStore("adb_undo").decide(
+            scratch,
+            approval_id,
+            approve=True,
+            operator_token_hash=token_hash(STRONG_OPERATOR_TOKEN),
+            decided_by="tester",
+        )
+    assert decided == "approved"
+
+    approved = await sess.run_approved_query(approval_id)
+
+    assert approved["ok"] is True
+    assert approved["status"] == "DELETE 29"
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 21
+
+
+async def test_run_approved_query_rejects_still_pending_hold(make_session, scratch):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+
+    denied = await sess.run_approved_query(held["approval_id"])
+
+    assert denied["ok"] is False
+    assert "not been approved" in f"{denied['error']} {denied['summary']}"
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
+
+
+async def test_run_approved_query_executes_approved_hold_only_once(
+    make_session, scratch
+):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+    approval_id = held["approval_id"]
+    decided = await ApprovalStore("adb_undo").decide(
+        scratch,
+        approval_id,
+        approve=True,
+        operator_token_hash=token_hash(STRONG_OPERATOR_TOKEN),
+        decided_by="tester",
+    )
+    assert decided == "approved"
+
+    first = await sess.run_approved_query(approval_id)
+    second = await sess.run_approved_query(approval_id)
+
+    assert first["ok"] is True
+    assert first["status"] == "DELETE 29"
+    assert second["ok"] is False
+    assert "already executed" in f"{second['error']} {second['summary']}"
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 21
+
+
+async def test_approval_decide_wrong_token_hash_leaves_hold_pending(
+    make_session, scratch
+):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+    approval_id = held["approval_id"]
+
+    decided = await ApprovalStore("adb_undo").decide(
+        scratch,
+        approval_id,
+        approve=True,
+        operator_token_hash=token_hash("wrong"),
+        decided_by="tester",
+    )
+    row = await ApprovalStore("adb_undo").get(scratch, approval_id)
+
+    assert decided is None
+    assert row["status"] == "pending"
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
+
+
+async def test_approval_decide_without_stored_token_hash_is_unapprovable(
+    make_session, scratch
+):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+    approval_id = held["approval_id"]
+
+    decided = await ApprovalStore("adb_undo").decide(
+        scratch,
+        approval_id,
+        approve=True,
+        operator_token_hash=token_hash(STRONG_OPERATOR_TOKEN),
+        decided_by="tester",
+    )
+    row = await ApprovalStore("adb_undo").get(scratch, approval_id)
+
+    assert decided is None
+    assert row["status"] == "pending"
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
+
+
+async def test_expired_hold_cannot_be_approved_executed_or_listed(
+    make_session, scratch
+):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+    approval_id = held["approval_id"]
+    await scratch.execute(
+        "UPDATE adb_undo.pending_approval "
+        "SET created_at = now() - interval '31 minutes' "
+        "WHERE approval_id = $1",
+        approval_id,
+    )
+
+    decided = await ApprovalStore("adb_undo").decide(
+        scratch,
+        approval_id,
+        approve=True,
+        operator_token_hash=token_hash(STRONG_OPERATOR_TOKEN),
+        decided_by="tester",
+    )
+    res = await sess.run_approved_query(approval_id)
+    pending_ids = {row["approval_id"] for row in await sess.pending_approvals()}
+
+    assert decided is None
+    assert res["ok"] is False
+    assert "expired" in f"{res['error']} {res['summary']}"
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
+    assert approval_id not in pending_ids
+
+
+async def test_approved_but_expired_hold_cannot_execute(make_session, scratch):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+    approval_id = held["approval_id"]
+    decided = await ApprovalStore("adb_undo").decide(
+        scratch,
+        approval_id,
+        approve=True,
+        operator_token_hash=token_hash(STRONG_OPERATOR_TOKEN),
+        decided_by="tester",
+    )
+    assert decided == "approved"
+    await scratch.execute(
+        "UPDATE adb_undo.pending_approval "
+        "SET created_at = now() - interval '31 minutes' "
+        "WHERE approval_id = $1",
+        approval_id,
+    )
+
+    res = await sess.run_approved_query(approval_id)
+
+    assert res["ok"] is False
+    assert "expired" in f"{res['error']} {res['summary']}"
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
+
+
+async def test_approval_store_ttl_configuration_and_fresh_decide(make_session, scratch):
+    assert ApprovalStore("adb_undo", ttl_seconds=1).ttl_seconds == 1
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, precise=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+    approval_id = held["approval_id"]
+
+    decided = await ApprovalStore("adb_undo").decide(
+        scratch,
+        approval_id,
+        approve=True,
+        operator_token_hash=token_hash(STRONG_OPERATOR_TOKEN),
+        decided_by="tester",
+    )
+    res = await sess.run_approved_query(approval_id)
+
+    assert decided == "approved"
+    assert res["ok"] is True
+    assert res["status"] == "DELETE 29"
     assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 21
 
 
@@ -479,6 +739,7 @@ async def test_bulk_equality_write_is_simulated_pk_point_write_is_not():
         assert point["status"] == "UPDATE 1"
         assert point["simulation"] is None
     finally:
+        await _clear_pending_approvals(pool, policy.undo.schema)
         async with pool.acquire() as c:
             await c.execute("DROP TABLE IF EXISTS bulk_scratch")
         await audit.stop()

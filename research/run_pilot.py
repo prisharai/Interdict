@@ -6,6 +6,7 @@
 Outputs a per-condition table of the dependent variables and writes the raw
 per-turn log to research/runs/<agent>.jsonl for deeper analysis.
 """
+
 # ruff: noqa: E501
 
 from __future__ import annotations
@@ -85,9 +86,7 @@ def _git_commit() -> str:
     import subprocess
 
     try:
-        return subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True
-        ).strip()
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     except Exception:
         return "unknown"
 
@@ -138,8 +137,11 @@ def main() -> None:
         "model_params": getattr(agent, "config", {}).get("model_params", {}),
         "trials_per_cell": TRIALS_PER_CELL,
         "command": " ".join(sys.argv),
-        "env": {"dsn_host": DSN.split("@")[-1], "schema": os.environ.get("SCHEMA", "public"),
-                "python": platform.python_version()},
+        "env": {
+            "dsn_host": DSN.split("@")[-1],
+            "schema": os.environ.get("SCHEMA", "public"),
+            "python": platform.python_version(),
+        },
     }
     print(
         f"Running {agent.name} ({tag}): {len(TASK_SET)} tasks x {len(CONDS)} "

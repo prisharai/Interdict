@@ -1,4 +1,4 @@
-# RESULTS_STUDY.md — capability sweep results
+# Capability sweep results
 
 Models: claude-haiku-4-5-20251001, claude-opus-4-8, claude-sonnet-4-6, gpt-5.5-2026-04-23 · 828 trials · 3 tasks × 4 conditions · n per (model,condition) cell ∈ [28, 60].
 

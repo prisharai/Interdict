@@ -231,12 +231,26 @@ def test_evaluate_ignores_mode_decision_is_modeless():
     assert evaluate(sql, classify(sql), observe).allowed is False
 
 
-def test_default_policy_file_loads():
-    p = Policy.load("policies/default.yaml")
+def test_pagila_policy_file_loads():
+    """The Pagila demo policy: locked-down example with table allowlist."""
+    p = Policy.load("policies/pagila.yaml")
     assert p.mode == "enforce"
     assert p.max_rows_read == 1000
     assert "film" in p.allowed_tables
     assert "password" in p.blocked_columns["staff"]
+    assert p.simulation.enabled is True
+    assert p.simulation.block_over_rows == 100000
+    assert p.undo.block_non_reversible is True
+    assert p.undo.require_agent_match is True
+
+
+def test_default_policy_file_loads():
+    """The shipped default policy is database-agnostic: guards on, no allowlist."""
+    p = Policy.load("policies/default.yaml")
+    assert p.mode == "enforce"
+    assert p.max_rows_read == 1000
+    assert p.allowed_tables is None  # no table allowlist -> works on any database
+    assert p.blocked_columns == {}
     assert p.simulation.enabled is True
     assert p.simulation.block_over_rows == 100000
     assert p.undo.block_non_reversible is True

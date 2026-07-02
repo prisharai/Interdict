@@ -194,14 +194,15 @@ async def run_experiment(
     import random
 
     # ``conditions`` is a {name: renderer} mapping (works for v1 or v2 sets).
-    plan = [
-        (t, c) for t in tasks for c in conditions for _ in range(trials_per_cell)
-    ]
+    plan = [(t, c) for t in tasks for c in conditions for _ in range(trials_per_cell)]
     random.Random(seed).shuffle(plan)
 
     if manifest is not None:
-        manifest = {**manifest, "seed": seed,
-                    "trial_order": [[t.id, c] for t, c in plan]}
+        manifest = {
+            **manifest,
+            "seed": seed,
+            "trial_order": [[t.id, c] for t, c in plan],
+        }
         Path(out_path).with_suffix(".manifest.json").write_text(
             json.dumps(manifest, indent=2)
         )

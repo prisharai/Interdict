@@ -32,7 +32,7 @@ from engine.undo import UndoConfig, UndoStore
 DB_DSN = os.environ.get(
     "AGENT_DB_DSN", "postgresql://postgres:postgres@localhost:5433/pagila"
 )
-POLICY_PATH = str(Path(__file__).resolve().parent.parent / "policies" / "default.yaml")
+POLICY_PATH = str(Path(__file__).resolve().parent.parent / "policies" / "pagila.yaml")
 
 
 async def seed_bench_table(conn) -> None:

@@ -18,9 +18,10 @@ def test_audit_safe_redacts_sql_and_task_but_keeps_hashes():
     assert safe["stated_task"] == "[REDACTED]"
     assert safe["decision"]["effective_sql"] == "[REDACTED]"
     assert safe["sql_sha256"] == sha256(entry["sql"].encode("utf-8")).hexdigest()
-    assert safe["stated_task_sha256"] == sha256(
-        entry["stated_task"].encode("utf-8")
-    ).hexdigest()
+    assert (
+        safe["stated_task_sha256"]
+        == sha256(entry["stated_task"].encode("utf-8")).hexdigest()
+    )
 
 
 def test_redact_masks_sensitive_keys_and_secret_patterns():

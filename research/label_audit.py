@@ -1,7 +1,7 @@
 """Human label audit: sample turns, blind them for two raters, and score
 inter-rater + human-vs-classifier agreement (Cohen's kappa).
 
-Protocol (see label_audit.md):
+Protocol (see docs/LABEL_AUDIT.md):
   1. Sample >=50 turns stratified by (condition x automatic category).
   2. Two raters independently judge each turn into one of four categories,
      WITHOUT seeing the automatic label (this sheet is blinded).
@@ -20,7 +20,7 @@ agreement is computed on the same 4-way scheme the humans use.
 
 Usage:
   uv run python -m research.label_audit sample [--target 60] [--per-cell 4] [--seed 0]
-  # ... two humans fill the R1 and R2 columns in research/audit/audit_sheet.csv ...
+  # ... two humans fill the R1 and R2 columns in research/validation/audit_sheet.csv ...
   uv run python -m research.label_audit score
 """
 
@@ -35,7 +35,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 RUNS = HERE / "runs"
-AUDIT = HERE / "audit"
+AUDIT = HERE / "validation"
 SHEET = AUDIT / "audit_sheet.csv"
 KEY = AUDIT / "audit_key.csv"
 RESULTS = AUDIT / "audit_results.md"
@@ -91,11 +91,7 @@ def sample(target: int, per_cell: int, seed: int) -> None:
 
     # Top up (or trim) to hit the target N with a random draw from the remainder.
     if len(chosen) < target:
-        remainder = [
-            t
-            for t in turns
-            if (t["trial_id"], t["turn"]) not in seen
-        ]
+        remainder = [t for t in turns if (t["trial_id"], t["turn"]) not in seen]
         rng.shuffle(remainder)
         for t in remainder:
             if len(chosen) >= target:
@@ -110,14 +106,33 @@ def sample(target: int, per_cell: int, seed: int) -> None:
     with SHEET.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
         w.writerow(
-            ["audit_id", "model", "task_id", "condition", "turn",
-             "decision", "rows_affected", "sql", "R1", "R2"]
+            [
+                "audit_id",
+                "model",
+                "task_id",
+                "condition",
+                "turn",
+                "decision",
+                "rows_affected",
+                "sql",
+                "R1",
+                "R2",
+            ]
         )
         for i, t in enumerate(chosen, 1):
             w.writerow(
-                [i, t["agent"], t["task_id"], t["condition"], t["turn"],
-                 t["decision_kind"], t.get("blast_radius", ""),
-                 t["sql"], "", ""]
+                [
+                    i,
+                    t["agent"],
+                    t["task_id"],
+                    t["condition"],
+                    t["turn"],
+                    t["decision_kind"],
+                    t.get("blast_radius", ""),
+                    t["sql"],
+                    "",
+                    "",
+                ]
             )
     # Hidden key: audit_id -> automatic label + collapsed category. Not for raters.
     with KEY.open("w", newline="", encoding="utf-8") as fh:
@@ -130,8 +145,9 @@ def sample(target: int, per_cell: int, seed: int) -> None:
     dist = Counter(AUTO_TO_AUDIT.get(t.get("attempt_label", ""), "N") for t in chosen)
     print(f"Wrote {len(chosen)} blinded turns -> {SHEET}")
     print(f"Hidden key -> {KEY}")
-    print("Auto-category distribution in sample:",
-          {c: dist.get(c, 0) for c in CATEGORIES})
+    print(
+        "Auto-category distribution in sample:", {c: dist.get(c, 0) for c in CATEGORIES}
+    )
     print("\nNext: two raters independently fill the R1 and R2 columns with one")
     print("of S / O / G / N (see the header comment in label_audit.py), then run")
     print("`uv run python -m research.label_audit score`.")
@@ -162,7 +178,8 @@ def score() -> None:
     r1 = _read_col(rows, "R1")
     r2 = _read_col(rows, "R2")
     filled = [
-        i for i, (a, b) in enumerate(zip(r1, r2, strict=True))
+        i
+        for i, (a, b) in enumerate(zip(r1, r2, strict=True))
         if a in CATEGORIES and b in CATEGORIES
     ]
     if not filled:
@@ -183,7 +200,8 @@ def score() -> None:
     k_auto = _cohen_kappa(cons, auto_cons) if cons else float("nan")
     agree_auto = (
         sum(1 for x, y in zip(cons, auto_cons, strict=True) if x == y) / len(cons)
-        if cons else float("nan")
+        if cons
+        else float("nan")
     )
     # Also kappa of each rater vs the classifier (before consensus).
     k_r1_auto = _cohen_kappa(r1f, auto)
@@ -198,8 +216,11 @@ def score() -> None:
         "## Human vs automatic classifier\n",
         f"- Consensus turns (raters agreed): **{len(cons)}**",
         f"- Cohen's kappa (consensus vs classifier): **{k_auto:.3f}**",
-        f"- Raw agreement (consensus vs classifier): "
-        f"**{agree_auto:.0%}**" if cons else "- (no consensus rows)",
+        (
+            f"- Raw agreement (consensus vs classifier): " f"**{agree_auto:.0%}**"
+            if cons
+            else "- (no consensus rows)"
+        ),
         f"- kappa R1 vs classifier: {k_r1_auto:.3f}; "
         f"R2 vs classifier: {k_r2_auto:.3f}\n",
         "## Interpretation\n",

@@ -1,12 +1,9 @@
-# Default policy shipped with Interdict.
+# Demo policy for the Pagila sample database.
 #
-# This policy is database-agnostic: it applies Interdict's structural guards,
-# blast-radius simulation, and undo to ANY Postgres database without needing a
-# per-table allowlist first. Tighten it per deployment by adding a `tables:`
-# allowlist (default-deny) -- see policies/pagila.yaml for a fully locked-down
-# example tuned to the demo dataset.
-#
-# Posture: fail closed for writes, fail open for reads; DDL is default-deny.
+# This is the fully locked-down example: a default-deny table allowlist scoped
+# to Pagila's schema, plus a sensitive-column block on staff.password. It is
+# used by the test corpus, the evasion suite, and the demo. The generic policy
+# Interdict ships as its default is policies/default.yaml.
 
 # enforce = block disallowed statements. observe = decide + log, but still run
 # (shadow). Use observe to trial a policy against live traffic before enforcing.
@@ -29,10 +26,11 @@ require_where_on_writes: true
 max_rows_read: 1000
 
 # Sensitive columns, per table. A reference to one of these columns -- or a star
-# select over the table -- is blocked. Empty by default: add your own, e.g.
-#   users:
-#     - password_hash
-blocked_columns: {}
+# select (`SELECT *` / `staff.*`) over the table -- is blocked. Pagila's staff
+# table holds a `password` column.
+blocked_columns:
+  staff:
+    - password
 
 # Unsafe functions are blocked on top of a built-in default set (pg_sleep,
 # advisory locks, lo_*, dblink, filesystem readers, ...). Add more here.
@@ -41,10 +39,28 @@ blocked_functions: []
 # Block SELECT ... FOR UPDATE/SHARE, which takes row locks.
 block_locking: true
 
-# No `tables:` allowlist here: all tables are reachable, guarded by the rules
-# above plus simulation/undo below. For default-deny table access, add:
-#   tables:
-#     allow: [orders, customers]
+# Default-deny table allowlist. Only these tables may be referenced. Anything
+# else is blocked with a TABLE_NOT_ALLOWED rejection. (Pagila public schema +
+# the large generated tables.)
+tables:
+  allow:
+    - actor
+    - address
+    - category
+    - city
+    - country
+    - customer
+    - film
+    - film_actor
+    - film_category
+    - inventory
+    - language
+    - payment
+    - rental
+    - staff
+    - store
+    - app_event
+    - metric_sample
 
 # DDL is default-deny. List tables on which schema changes (DROP/TRUNCATE/ALTER/
 # CREATE INDEX/...) are explicitly permitted. Empty = no DDL allowed anywhere.

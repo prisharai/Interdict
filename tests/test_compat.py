@@ -39,7 +39,7 @@ from engine.undo import UndoStore
 DB_DSN = os.environ.get(
     "AGENT_DB_DSN", "postgresql://postgres:postgres@localhost:5433/pagila"
 )
-_ROOT_POLICY = "policies/default.yaml"
+_ROOT_POLICY = "policies/pagila.yaml"
 
 # --- A small SQLAlchemy schema mirroring the tables we touch ------------------
 _md = MetaData()

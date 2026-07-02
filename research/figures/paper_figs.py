@@ -88,9 +88,15 @@ def _line_figure(field: str, ylabel: str, fname: str) -> None:
     for stem, (label, color, marker, ls) in MODELS.items():
         ps, los, his = _rates(stem, field)
         ax.errorbar(
-            x, [p * 100 for p in ps],
+            x,
+            [p * 100 for p in ps],
             yerr=[[e * 100 for e in los], [e * 100 for e in his]],
-            color=color, marker=marker, ls=ls, lw=2, ms=8, capsize=4,
+            color=color,
+            marker=marker,
+            ls=ls,
+            lw=2,
+            ms=8,
+            capsize=4,
             label=label,
         )
     ax.legend(frameon=False, loc="center right")
@@ -118,30 +124,73 @@ def schematic() -> None:
     STOP = "#d1495b"
 
     def box(x, y, w, h, text, ec=INK, fc="white", fs=10.5, lw=1.4, bold=False):
-        ax.add_patch(FancyBboxPatch(
-            (x, y), w, h, boxstyle="round,pad=0.6,rounding_size=2.5",
-            ec=ec, fc=fc, lw=lw, mutation_scale=1))
-        ax.text(x + w / 2, y + h / 2, text, ha="center", va="center",
-                fontsize=fs, color=INK,
-                fontweight="bold" if bold else "normal")
+        ax.add_patch(
+            FancyBboxPatch(
+                (x, y),
+                w,
+                h,
+                boxstyle="round,pad=0.6,rounding_size=2.5",
+                ec=ec,
+                fc=fc,
+                lw=lw,
+                mutation_scale=1,
+            )
+        )
+        ax.text(
+            x + w / 2,
+            y + h / 2,
+            text,
+            ha="center",
+            va="center",
+            fontsize=fs,
+            color=INK,
+            fontweight="bold" if bold else "normal",
+        )
 
     def arrow(x1, y1, x2, y2, color=INK, style="-|>", rad=0.0, lw=1.6):
-        ax.add_patch(FancyArrowPatch(
-            (x1, y1), (x2, y2), arrowstyle=style, mutation_scale=14,
-            lw=lw, color=color,
-            connectionstyle=f"arc3,rad={rad}"))
+        ax.add_patch(
+            FancyArrowPatch(
+                (x1, y1),
+                (x2, y2),
+                arrowstyle=style,
+                mutation_scale=14,
+                lw=lw,
+                color=color,
+                connectionstyle=f"arc3,rad={rad}",
+            )
+        )
 
     # Agent
     box(2, 60, 17, 16, "Agent", bold=True)
 
     # Guardrail container with four inner steps
-    ax.add_patch(FancyBboxPatch(
-        (26, 50), 52, 36, boxstyle="round,pad=0.6,rounding_size=3",
-        ec=GUARD, fc="#eef5fb", lw=1.8))
-    ax.text(52, 82, "Guardrail", ha="center", va="center",
-            fontsize=11.5, color=GUARD, fontweight="bold")
-    steps = ["Parse\n(PostgreSQL\nparser)", "Classify\n(AST)",
-             "Policy\nrules", "Measure impact\nBEGIN;…;ROLLBACK"]
+    ax.add_patch(
+        FancyBboxPatch(
+            (26, 50),
+            52,
+            36,
+            boxstyle="round,pad=0.6,rounding_size=3",
+            ec=GUARD,
+            fc="#eef5fb",
+            lw=1.8,
+        )
+    )
+    ax.text(
+        52,
+        82,
+        "Guardrail",
+        ha="center",
+        va="center",
+        fontsize=11.5,
+        color=GUARD,
+        fontweight="bold",
+    )
+    steps = [
+        "Parse\n(PostgreSQL\nparser)",
+        "Classify\n(AST)",
+        "Policy\nrules",
+        "Measure impact\nBEGIN;…;ROLLBACK",
+    ]
     xs = [28, 40.5, 53, 64.5]
     ws = [11, 11, 10, 12.5]
     for x, w, s in zip(xs, ws, steps, strict=True):
@@ -160,13 +209,22 @@ def schematic() -> None:
     arrow(78, 63, 84, 40, color=STOP, rad=-0.2)
 
     # Denial message + feedback loop back to the agent
-    box(30, 18, 40, 14,
+    box(
+        30,
+        18,
+        40,
+        14,
         "Denial message\n(4 richness levels: opaque → reason code\n"
-        "→ + fix → + measured row count)", ec=STOP, fc="#fdeef1", fs=8.6)
-    arrow(84, 34, 70, 25, color=STOP, rad=0.15)   # Hold/Block -> denial
+        "→ + fix → + measured row count)",
+        ec=STOP,
+        fc="#fdeef1",
+        fs=8.6,
+    )
+    arrow(84, 34, 70, 25, color=STOP, rad=0.15)  # Hold/Block -> denial
     arrow(30, 25, 10, 60, color=STOP, rad=-0.25)  # denial -> agent (retry)
-    ax.text(9, 44, "retry (≤ 4 turns)", ha="center", fontsize=9,
-            color=STOP, style="italic")
+    ax.text(
+        9, 44, "retry (≤ 4 turns)", ha="center", fontsize=9, color=STOP, style="italic"
+    )
 
     fig.tight_layout()
     for ext in ("png", "pdf"):

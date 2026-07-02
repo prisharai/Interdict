@@ -42,13 +42,13 @@ const runSteps = [
     label: "Step 2",
     title: "Connect your agent",
     copy:
-      "Register Interdict as an MCP server. After this, database work inside a larger Claude or Codex task should route through Interdict instead of direct Postgres access.",
+      "Register Interdict as an MCP server. The default policy works on any Postgres; use the Pagila policy only for the bundled demo database.",
     code:
       "codex mcp add interdict \\\n  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \\\n  --env AGENT_OPERATOR_TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(32))') \\\n  -- interdict",
     expected:
-      "The chat has Interdict tools available: run_query, revert_write, list_pending_approvals, approve_query, audit_status, and interdict_status.",
+      "The chat has Interdict tools available: run_query, revert_write, list_pending_approvals, run_approved_query, and interdict_status.",
     note:
-      "For Claude Code, use the same shape with claude mcp add interdict ... -- interdict.",
+      "For Claude Code, use the same shape with claude mcp add interdict ... -- interdict. Interdict now preflights policy loading and database reachability at startup.",
   },
   {
     label: "Step 3",
@@ -58,7 +58,7 @@ const runSteps = [
     code:
       "# In Codex\n/mcp\n\n# Or ask the agent:\nCall interdict_status and tell me whether Interdict is active in this chat.",
     expected:
-      "The agent reports active=true, the protected DSN, policy mode, simulation status, and undo status.",
+      "The agent reports active=true, the protected DSN, policy, audit health, simulation status, and undo status.",
     note:
       "Users should not need to say \"use Interdict\" every time. The agent should use it whenever a task needs database work.",
   },
@@ -66,13 +66,13 @@ const runSteps = [
     label: "Step 4",
     title: "Run the practice prompts",
     copy:
-      "Now use normal agent prompts on the bundled database. You should see one allowed read, one undoable write, one held write, and one blocked broad delete.",
+      "Now use normal agent prompts on the bundled database. You should see one allowed read, one undoable write, one held write with an approval_id, and one blocked broad delete.",
     code:
       "Find actor_id 1 and summarize it.\n\nUpdate actor_id 1 by setting last_update = last_update, show the undo_action_id, then revert it.\n\nDelete rows from metric_sample where sensor_id <= 2000 and explain exactly why Interdict blocked or held it.",
     expected:
-      "Allowed reads return rows. Reversible writes return undo_action_id. Broad writes return block_reason or approval_id instead of silently touching data.",
+      "Allowed reads return rows. Reversible writes return undo_action_id. Held writes return approval_id and wait for interdict approve <id>; broad writes return block_reason.",
     note:
-      "If the demo DB gets changed during testing, reset it with docker compose down -v && docker compose up -d.",
+      "Held approvals expire after 30 minutes by default, so stale writes must be re-measured before a human can approve them.",
   },
 ];
 

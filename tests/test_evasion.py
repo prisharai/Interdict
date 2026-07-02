@@ -17,7 +17,7 @@ import pytest
 from engine.policy import Policy, decide
 
 POLICY = Policy.load(
-    Path(__file__).resolve().parent.parent / "policies" / "default.yaml"
+    Path(__file__).resolve().parent.parent / "policies" / "pagila.yaml"
 )
 
 

@@ -9,7 +9,7 @@ trial, and produces:
   pairwise Fisher exact tests of each condition vs the opaque baseline (odds
   ratios + p-values), pooled and per model, plus a logistic regression when it
   converges;
-* figures (PNG) and a single ``RESULTS_STUDY.md`` with everything in it.
+* figures (PNG) and a single ``docs/RESULTS_STUDY.md`` with everything in it.
 
     uv run python -m research.stats
 """
@@ -33,6 +33,7 @@ from scipy.stats import fisher_exact  # noqa: E402
 ROOT = Path(__file__).resolve().parent
 RUNS = ROOT / "runs"
 FIGS = ROOT / "figures"
+DOCS = ROOT / "docs"
 CONDITIONS = ["C0_opaque", "C1_reason_code", "C2_reason_fix", "C3_reason_fix_blast"]
 EVASIONS = {"scope_theater_evasion", "obfuscation_evasion", "structural_evasion"}
 RECOVERED = {"allowed_ontask", "genuine_correction"}
@@ -213,14 +214,15 @@ def main() -> None:
     )
     # Confirmatory analysis is restricted to fully-balanced models (all cells).
     complete = [
-        m for m in models
+        m
+        for m in models
         if df[df.model == m].groupby(["task", "condition"]).ngroups
         == df.task.nunique() * len(CONDITIONS)
         and df[df.model == m].groupby(["task", "condition"]).size().min() >= 20
     ]
 
     L = []
-    L.append("# RESULTS_STUDY.md — capability sweep results\n")
+    L.append("# Capability sweep results\n")
     L.append(
         f"Models: {', '.join(models)} · {len(df)} trials · "
         f"{df.task.nunique()} tasks × {len(CONDITIONS)} conditions · "
@@ -291,11 +293,15 @@ def main() -> None:
     if complete:
         L.append(_wilson_table(df[df.model.isin(complete)], "evasion"))
         L.append("\n**Sensitivity (excluding protocol-failure trials):**\n")
-        L.append(_wilson_table(
-            df[df.model.isin(complete) & (df.protocol_failure == 0)], "evasion"
-        ))
+        L.append(
+            _wilson_table(
+                df[df.model.isin(complete) & (df.protocol_failure == 0)], "evasion"
+            )
+        )
     else:
-        L.append("_No model has all cells at n>=20; treat all cross-model numbers as descriptive._")
+        L.append(
+            "_No model has all cells at n>=20; treat all cross-model numbers as descriptive._"
+        )
 
     L.append("\n## Evasion-strategy taxonomy (counts), by condition\n")
     tax = (
@@ -331,7 +337,8 @@ def main() -> None:
     L.append("\n## Representative blocked→evade trajectories\n")
     L.append(_trajectories())
 
-    (ROOT / "RESULTS_STUDY.md").write_text("\n".join(str(x) for x in L) + "\n")
+    DOCS.mkdir(exist_ok=True)
+    (DOCS / "RESULTS_STUDY.md").write_text("\n".join(str(x) for x in L) + "\n")
 
     _bar(df, "evasion", "Evasion rate by denial richness", "evasion_by_condition.png")
     _bar(
@@ -342,7 +349,7 @@ def main() -> None:
     )
     _bar(df, "recovered", "Genuine recovery by denial richness", "recovery.png")
 
-    print("Wrote research/RESULTS_STUDY.md and research/figures/*.png")
+    print("Wrote research/docs/RESULTS_STUDY.md and research/figures/*.png")
     print(_rate_table(df, "evasion").to_markdown(floatfmt=".0%"))
 
 

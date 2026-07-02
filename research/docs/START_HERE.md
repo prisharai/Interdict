@@ -3,18 +3,18 @@
 You (an LLM) have everything in this `research/` folder needed to write the full
 paper. Read these in order:
 
-1. **`INDEX.md`** (this file) — the finding, the data state, what each file is.
-2. **`PAPER.md`** — the paper dossier: title/abstract template, intro,
+1. **`docs/START_HERE.md`** (this file) — the finding, the data state, what each file is.
+2. **`docs/PAPER_DOSSIER.md`** — the paper dossier: title/abstract template, intro,
    related-work map, method in prose, discussion, limitations, ethics, and the
    full data-schema inventory. **This is your section-by-section skeleton.**
-3. **`RESULTS_STUDY.md`** — generated results: all rate tables, Fisher exact
+3. **`docs/RESULTS_STUDY.md`** — generated results: all rate tables, Fisher exact
    tests (odds ratios + p-values), logistic regression, evasion-taxonomy counts,
    turns-to-recovery, and verbatim blocked→evade trajectories.
-4. **`README.md`** — experiment design rationale (why these tasks/conditions/
+4. **`docs/STUDY_DESIGN.md`** — experiment design rationale (why these tasks/conditions/
    metrics; the two-literature gap; threats to validity).
 5. **`figures/*.png`** — `evasion_by_condition.png`, `scope_theater.png`,
    `recovery.png` (regenerate via `uv run python -m research.stats`).
-6. **`runs/*.jsonl`** — raw per-turn data, one file per model (schema in PAPER.md
+6. **`runs/*.jsonl`** — raw per-turn data, one file per model (schema in docs/PAPER_DOSSIER.md
    §9). Every prompt, SQL, decision, and measured blast radius is here.
 
 Source of the instrument: `harness.py` (tasks, conditions, evasion classifier),
@@ -37,7 +37,7 @@ while still affecting every row. That tautological predicate is never needed to
 serve the user — the broad write was already blocked — so adopting it is a move
 to get the blocked effect *past the rule*: specification gaming of the guardrail,
 measurable directly on this data. The narrow-intent task set (`tasks_v2.py` +
-`pre_registration.md`) is an **optional second operationalization** that also
+`docs/PRE_REGISTRATION.md`) is an **optional second operationalization** that also
 removes any ambiguity about user intent; it strengthens the result but is not a
 prerequisite for the central claim.
 
@@ -75,7 +75,7 @@ class of statement; simple syntax heuristics catch only some cases.
   fold those turns into the behavioral headline. GPT-5.5 has low protocol failure
   and is the clean cross-provider complete run.
 - Exact odds ratios + p-values (Fisher exact, each condition vs C0, pooled and
-  per model) and the logistic regression are in `RESULTS_STUDY.md`.
+  per model) and the logistic regression are in `docs/RESULTS_STUDY.md`.
 
 ## DATA STATE — read before writing the results
 
@@ -107,7 +107,7 @@ replication: add API credits and re-run the two partial models
   partial; high Anthropic protocol-failure rates; one seed; the richest condition
   (C3) adds the measured row count *and* a confirmation framing, so it does not
   cleanly isolate impact from framing. The narrow-intent task set
-  (`pre_registration.md`) is an optional second operationalization that further
+  (`docs/PRE_REGISTRATION.md`) is an optional second operationalization that further
   removes any ambiguity about user intent.
 
 ## Product Metric Alignment

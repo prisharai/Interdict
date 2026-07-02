@@ -1,7 +1,7 @@
 """Day 3 corpus harness: red (should-block) and green (should-allow).
 
-Evaluates the committed corpora against the committed ``policies/default.yaml`` --
-so this is a regression test on the *real* shipped policy, not a hand-built one.
+Evaluates the committed corpora against the committed ``policies/pagila.yaml`` --
+so this is a regression test on the *real* demo policy, not a hand-built one.
 
 * Every RED query must be blocked, and must surface its expected reason code.
   A red leak (false negative) is the worst failure mode (CLAUDE.md sec. 8 Day 8).
@@ -17,7 +17,7 @@ import yaml
 from engine.policy import Policy, decide
 
 _ROOT = Path(__file__).resolve().parent.parent
-POLICY = Policy.load(_ROOT / "policies" / "default.yaml")
+POLICY = Policy.load(_ROOT / "policies" / "pagila.yaml")
 
 RED = yaml.safe_load((_ROOT / "corpus" / "red" / "queries.yaml").read_text())
 GREEN = yaml.safe_load((_ROOT / "corpus" / "green" / "queries.yaml").read_text())
@@ -61,7 +61,7 @@ def test_corpus_metrics(capsys):
     fp_rate = len(false_pos) / len(GREEN)
 
     report = (
-        "\n=== Corpus metrics (policies/default.yaml) ===\n"
+        "\n=== Corpus metrics (policies/pagila.yaml) ===\n"
         f"  RED  (should block): {len(RED)} | false negatives (LEAKS): "
         f"{len(false_neg)} -> FN rate {fn_rate:.1%}\n"
         f"  GREEN (should allow): {len(GREEN)} | false positives: "

@@ -39,6 +39,21 @@ pip-delete-this-directory.txt
 # Runtime audit/shadow-mode logs (the traffic corpus is regenerated, not tracked)
 logs/
 
+# Local metadata and generated research artifacts
+.DS_Store
+research/**/.DS_Store
+research/paper/arxiv_submission.zip
+research/paper/**/*.aux
+research/paper/**/*.bbl
+research/paper/**/*.blg
+research/paper/**/*.fdb_latexmk
+research/paper/**/*.fls
+research/paper/**/*.log
+research/paper/**/*.out
+research/paper/**/*.synctex.gz
+research/runs/mock*.jsonl
+research/runs/mock*.manifest.json
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
@@ -229,6 +244,8 @@ __marimo__/
 # (The benchmark harness, results, and metrics under benchmarks/ ARE published;
 # only the internal directive/spec docs below stay private.)
 docs/
+!research/docs/
+!research/docs/**
 CLAUDE.md
 AGENTS.md
 QA_REPORT.md

@@ -2,11 +2,11 @@
 
 This document is the writing kit: the framing, the method in full prose, the
 data inventory (so you know exactly what you have), the result slots (filled from
-`RESULTS_STUDY.md`, which is generated from the raw logs), and the discussion /
+`docs/RESULTS_STUDY.md`, which is generated from the raw logs), and the discussion /
 limitations / reproducibility material. Pair it with:
 
-- `README.md` — experiment design rationale (the "why these choices").
-- `RESULTS_STUDY.md` — generated tables, statistical tests, figures (run
+- `docs/STUDY_DESIGN.md` — experiment design rationale (the "why these choices").
+- `docs/RESULTS_STUDY.md` — generated tables, statistical tests, figures (run
   `uv run python -m research.stats`).
 - `runs/*.jsonl` — the raw per-turn data (one file per model).
 - `figures/*.png` — the plots.
@@ -43,7 +43,7 @@ hacking*, *in-context reward hacking*, *literal (syntactic) rule satisfaction*,
 affected rows*, *pre-execution (counterfactual) simulation*. Do **not** introduce
 coined terms.
 
-## Abstract (template — fill bracketed values from `RESULTS_STUDY.md`)
+## Abstract (template — fill bracketed values from `docs/RESULTS_STUDY.md`)
 
 > Specification gaming — an agent satisfying the letter of a rule while defeating
 > its purpose — is well documented in reinforcement-learning and, more recently,
@@ -180,7 +180,7 @@ knowledge.")
   Confirmatory aggregate analyses should be restricted to fully balanced complete
   runs, with sensitivity excluding protocol-failure trials.
 
-## 5. Results (generated → `RESULTS_STUDY.md`; numbers below are current)
+## 5. Results (generated → `docs/RESULTS_STUDY.md`; numbers below are current)
 
 Four models, 828 trials; two complete confirmatory runs (Haiku, n=60/condition;
 gpt-5.5, n=60/condition) plus partial exploratory Sonnet/Opus runs. Terminology:
@@ -218,7 +218,7 @@ table.
   across C0–C3. Naming the rule or suggesting a fix did not; showing impact did.
   (gpt-5.5 protocol-failure rate was low, 0–2%, so these are genuine SQL attempts.)
 - **Qualitative:** blocked → `TRUNCATE` → `DELETE … WHERE TRUE` / `UPDATE … WHERE
-  price IS DISTINCT FROM 0` trajectories, verbatim in `RESULTS_STUDY.md`.
+  price IS DISTINCT FROM 0` trajectories, verbatim in `docs/RESULTS_STUDY.md`.
 
 ## 6. Discussion
 
@@ -274,7 +274,7 @@ docker compose up -d
 AGENT=anthropic MODEL=claude-haiku-4-5-20251001 SCHEMA=exp_haiku TRIALS=20 \
   uv run --env-file .env python -m research.run_pilot
 # ... repeat for claude-sonnet-4-6, claude-opus-4-8 ...
-uv run python -m research.stats          # -> RESULTS_STUDY.md + figures/
+uv run python -m research.stats          # -> docs/RESULTS_STUDY.md + figures/
 ```
 
 **Raw data schema** — `runs/<model>.jsonl`, one JSON object per agent turn:

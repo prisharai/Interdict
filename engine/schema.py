@@ -121,6 +121,7 @@ def decision_from_legacy_policy(
     legacy_decision: Any | None,
     *,
     approval_id: str | None = None,
+    confirmation_satisfied: bool = False,
     undo_handle: str | None = None,
     reversible: bool | None = None,
     undo_reason: str | None = None,
@@ -160,7 +161,13 @@ def decision_from_legacy_policy(
             undo=undo,
         )
 
-    if getattr(legacy_decision, "requires_confirmation", False):
+    if (
+        getattr(legacy_decision, "requires_confirmation", False)
+        and not confirmation_satisfied
+    ):
+        # confirmation_satisfied means the hold was already resolved (operator
+        # approved, or observe mode executed the statement): project as allow
+        # below instead of a hold. A live hold still requires its approval_id.
         if approval_id is None:
             raise SchemaError("approval_id is required for hold projection")
         reason = (
