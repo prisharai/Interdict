@@ -114,11 +114,9 @@
       <header class="site-header">
         <a class="brand" href="#top">Interdict</a>
         <nav class="nav" aria-label="Primary">
-          <a href="#problem">Why</a>
-          <a href="#demo">See it</a>
-          <a href="#method">How</a>
           <a href="#quickstart">Start</a>
-          <a href="#metrics">Numbers</a>
+          <a href="#demo">Flows</a>
+          <a href="#problem">Why</a>
         </nav>
         <div class="header-actions">
           <a class="header-link" href="https://github.com/prisharai/Interdict" target="_blank" rel="noreferrer">GitHub</a>
@@ -140,22 +138,21 @@
           </svg>
           <div class="hero-copy">
             <p class="eyebrow reveal" style="--i:0">agent-native database safety</p>
-            <h2 class="hero-title reveal" style="--i:1">The missing runtime layer between <em>AI agents</em> and Postgres.</h2>
+            <h2 class="hero-title reveal" style="--i:1">Run Interdict locally in four steps.</h2>
             <p class="lede reveal" style="--i:2">
-              Interdict is built for the moment an autonomous agent is about to
-              touch production data. It parses every statement, measures the real
-              blast radius, then allows, holds, or blocks before Postgres is touched.
-              Humans approve held writes from their own terminal, so approval
-              tokens never enter the agent chat.
+              Start the demo database, launch the MCP server, connect Claude Code,
+              then test block, hold, approve, execute, and undo. Interdict sits
+              between AI agents and Postgres so risky writes are measured before
+              they touch data.
             </p>
             <div class="action-row reveal" style="--i:3">
               <a class="button primary" href="#quickstart">Run it locally</a>
               <a class="button ghost" href="https://github.com/prisharai/Interdict" target="_blank" rel="noreferrer">Read the source</a>
             </div>
             <ul class="hero-facts reveal" style="--i:4">
-              <li><b>first</b> agent-native runtime layer for SQL blast radius + undo</li>
-              <li><b>~0&nbsp;ms</b> added latency on the safe path</li>
-              <li><b>330</b> automated tests covering policy, approval, TTL, and undo</li>
+              <li><b>blocks</b> unscoped destructive writes before Postgres</li>
+              <li><b>holds</b> risky writes for out-of-band terminal approval</li>
+              <li><b>undoes</b> approved writes with an audit trail</li>
             </ul>
           </div>
 
@@ -319,117 +316,85 @@ agent calls:   run_approved_query(8f41...)</code></pre>
         <section id="quickstart" class="section">
           <div class="section-head">
             <p class="eyebrow">start here</p>
-            <h2>Get comfortable on the bundled test database.</h2>
-            <p class="section-sub">Install Interdict, start the seeded Postgres fixture, connect Claude or Codex, then watch real agent prompts get allowed, held, approved out-of-band, undone, and blocked.</p>
+            <h2>Exact steps to run Interdict locally right now.</h2>
+            <p class="section-sub">Use the bundled Pagila database first. Then replace the DSN with your own Postgres connection string.</p>
           </div>
           <div class="runbook">
             <div class="runbook-tabs" role="tablist" aria-label="Setup steps">
-              <button class="run-tab is-active" type="button" data-step="0">install</button>
-              <button class="run-tab" type="button" data-step="1">test db</button>
+              <button class="run-tab is-active" type="button" data-step="0">database</button>
+              <button class="run-tab" type="button" data-step="1">server</button>
               <button class="run-tab" type="button" data-step="2">connect</button>
-              <button class="run-tab" type="button" data-step="3">activate</button>
-              <button class="run-tab" type="button" data-step="4">practice</button>
+              <button class="run-tab" type="button" data-step="3">test</button>
             </div>
             <div class="runbook-panel">
               <div class="run-copy">
-                <p class="run-label" id="run-step-label">step 0</p>
-                <h3 id="run-step-title">Install Interdict</h3>
-                <p id="run-step-copy">Install the MCP server your agent will call before touching Postgres.</p>
+                <p class="run-label" id="run-step-label">step 1</p>
+                <h3 id="run-step-title">Start the dev database</h3>
+                <p id="run-step-copy">Bring up the bundled Pagila Postgres fixture.</p>
                 <div class="run-expected">
                   <span>what good looks like</span>
-                  <p id="run-step-expected">The <code>interdict</code> command is available. This is the MCP layer for Claude, Codex, Cursor, or any MCP-capable agent.</p>
+                  <p id="run-step-expected">Postgres is running on localhost:5433 with the pagila database loaded.</p>
                 </div>
-                <p class="run-note" id="run-step-note">The PyPI package is <code>interdict-db</code>; the command users run is <code>interdict</code>.</p>
+                <p class="run-note" id="run-step-note">If the database is already up, this command is a no-op.</p>
               </div>
               <div class="console run-command">
                 <div class="console-bar">
                   <span class="console-dots" aria-hidden="true"><i></i><i></i><i></i></span>
                   <button class="copy-command" type="button">copy</button>
                 </div>
-                <pre><code id="run-step-code">pip install interdict-db
-
-# confirm the command exists
-interdict --help</code></pre>
+                <pre><code id="run-step-code">docker compose up -d</code></pre>
               </div>
             </div>
           </div>
           <div class="manual-grid">
             <article class="manual-card">
-              <span class="tag">how to prompt</span>
-              <h3>Write normal product requests.</h3>
-              <p>Do not train users to say “use Interdict.” If Interdict is connected in the chat, database work inside larger Claude/Codex tasks should route through it automatically.</p>
+              <span class="tag">active</span>
+              <h3>Verify once per chat.</h3>
+              <p>After connecting Claude Code, ask it to call <code>interdict_status</code>. You should see the guarded DSN.</p>
             </article>
             <article class="manual-card">
-              <span class="tag">how to know</span>
-              <h3>Ask whether it is active.</h3>
-              <p>Use <code>/mcp</code> in Codex, or ask the agent to call <code>interdict_status</code>. Active means this chat has the database safety layer connected.</p>
+              <span class="tag">approval</span>
+              <h3>Approve outside chat.</h3>
+              <p>Run <code>interdict approve &lt;id&gt;</code> in your terminal with <code>AGENT_OPERATOR_TOKEN</code> set in that shell.</p>
             </article>
             <article class="manual-card">
-              <span class="tag">how approvals work</span>
-              <h3>The model cannot approve itself.</h3>
-              <p>Large writes return an <code>approval_id</code> and wait. A human runs <code>interdict approve &lt;id&gt;</code>, then the agent calls <code>run_approved_query</code>. Holds expire after 30 minutes.</p>
+              <span class="tag">undo</span>
+              <h3>Reverse by id.</h3>
+              <p>Successful writes return an <code>undo_id</code>. Ask Claude Code to call <code>revert_write</code> with that id.</p>
             </article>
           </div>
 
           <div class="prompt-lab">
             <div class="prompt-lab-head">
-              <p class="eyebrow">test prompts</p>
-              <h3>Paste these into Claude or Codex after MCP is connected.</h3>
-              <p>They use the bundled Pagila + large-table database so users can see the product behave before pointing it at anything real.</p>
+              <p class="eyebrow">test flow</p>
+              <h3>Four prompts prove the loop.</h3>
+              <p>Use the bundled database before pointing Interdict at production.</p>
             </div>
             <div class="prompt-grid">
               <article class="prompt-card">
-                <span class="tag">allowed read</span>
-                <p>Find actor_id 1 in the test database and summarize the row. If database access is needed, use the active database safety layer.</p>
-                <small>Expected: allowed read, rows returned, no write.</small>
+                <span class="tag">block</span>
+                <p>delete all customers</p>
+                <small>Expected: blocked because the write is unscoped.</small>
               </article>
               <article class="prompt-card">
-                <span class="tag">undoable write</span>
-                <p>For the demo database, update actor_id 1 by setting last_update = last_update, then show me the undo_action_id and revert it.</p>
-                <small>Expected: UPDATE 1, undo id, then successful revert.</small>
+                <span class="tag">hold</span>
+                <p>delete the first 100 customers</p>
+                <small>Expected: held with an approval_id and clear next steps.</small>
               </article>
               <article class="prompt-card">
-                <span class="tag">held write</span>
-                <p>Clean up metric_sample rows where sensor_id &lt;= 200. Do not approve anything. Tell me the blast radius and approval_id if it is held.</p>
-                <small>Expected: held with an <code>approval_id</code>; no token appears in chat.</small>
+                <span class="tag">approve</span>
+                <p>After terminal approval, call run_approved_query with the approval_id.</p>
+                <small>Expected: the write runs and returns an undo_id.</small>
               </article>
               <article class="prompt-card">
-                <span class="tag">blocked write</span>
-                <p>Delete rows from metric_sample where sensor_id &lt;= 2000 and explain exactly why the safety layer blocked or held it.</p>
-                <small>Expected: blocked for <code>BLAST_RADIUS_EXCEEDED</code>; no rows deleted.</small>
+                <span class="tag">undo</span>
+                <p>undo the delete</p>
+                <small>Expected: Claude Code calls revert_write and restores the rows.</small>
               </article>
             </div>
           </div>
         </section>
 
-        <!-- Metrics -->
-        <section id="metrics" class="section">
-          <div class="section-head">
-            <p class="eyebrow">the numbers</p>
-            <h2>What it measures, measured locally.</h2>
-          </div>
-          <div class="metric-grid">
-            <article class="metric"><span>automated tests</span><strong>330</strong><p>Parser behavior, policy, simulation, approvals, TTL, audit redaction, undo, MCP enforcement, and terminal mode.</p></article>
-            <article class="metric"><span>approval token exposure</span><strong>0</strong><p>Humans approve from their own terminal; the operator token never enters the agent chat.</p></article>
-            <article class="metric"><span>approval lifetime</span><strong>30m</strong><p>Held writes expire by default, forcing a fresh blast-radius measurement before approval.</p></article>
-            <article class="metric"><span>red-corpus false negatives</span><strong>0%</strong><p>Dangerous SQL was fully blocked locally; green-corpus false positives were 0% too.</p></article>
-          </div>
-        </section>
-
-        <!-- CTA -->
-        <section class="section">
-          <div class="status">
-            <div class="status-copy">
-              <p class="eyebrow">where it stands</p>
-              <h2>The first agent-native safety layer for database writes.</h2>
-              <p>Not a dashboard. Not an ORM. Interdict is a runtime guardrail placed directly between AI agents and Postgres, built around deterministic checks, latency budgets, auditability, out-of-band human approval, and fail-closed writes.</p>
-            </div>
-            <div class="status-actions">
-              <a class="button primary" href="mailto:pr482@cornell.edu?subject=Interdict%20access">Request access</a>
-              <a class="button ghost" href="mailto:pr482@cornell.edu?subject=Interdict">Email the founder</a>
-            </div>
-          </div>
-        </section>
       </main>
 
       <footer class="footer">

@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from adapters.mcp_server import _mcp_actor
+from adapters.mcp_server import _executed_summary, _held_summary, _mcp_actor
 
 
 def test_mcp_actor_prefers_client_id():
@@ -18,3 +18,19 @@ def test_mcp_actor_falls_back_to_stable_session_identity():
 
     assert _mcp_actor(first) == _mcp_actor(second)
     assert _mcp_actor(first) != "req-1"
+
+
+def test_held_summary_points_to_terminal_then_chat():
+    summary = _held_summary("approval-123", {"affected_rows": 100})
+
+    assert "operator token must never enter this chat" in summary
+    assert "In YOUR terminal (not here)" in summary
+    assert "AGENT_OPERATOR_TOKEN=your_token interdict approve approval-123" in summary
+    assert 'run_approved_query(approval_id="approval-123")' in summary
+
+
+def test_executed_summary_includes_revert_hint_for_undoable_write():
+    summary = _executed_summary("DELETE 100", 100, None, "undo-123")
+
+    assert "undo_id=undo-123" in summary
+    assert 'revert_write(action_id="undo-123")' in summary

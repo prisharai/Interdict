@@ -53,10 +53,18 @@ pip install interdict-db
 Start the Interdict MCP server:
 
 ```bash
+# For the demo Pagila database:
 AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \
-AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+AGENT_OPERATOR_TOKEN="..." \
+interdict
+
+# For your own database:
+AGENT_DB_DSN=postgresql://user:password@yourhost:5432/yourdbname \
+AGENT_OPERATOR_TOKEN="..." \
 interdict
 ```
+
+Replace the DSN with your own Postgres connection string.
 
 This is the main product surface: your agent talks to Interdict's MCP server
 instead of touching Postgres directly. Interdict is active in an agent chat only
@@ -68,7 +76,7 @@ The user does not need to phrase every request as "use Interdict." Once the MCP
 server is connected, your agent instructions should say that any database work
 inside a larger task must go through Interdict's MCP tools.
 
-**Claude Code:**
+When Interdict starts, it prints the exact Claude Code command to paste:
 
 ```bash
 claude mcp add interdict \
@@ -100,8 +108,8 @@ AGENT_OPERATOR_TOKEN = "paste-a-random-token-at-least-32-chars"
 > find `interdict`, use the absolute path from `which interdict` as
 > `command`. Verify with `codex mcp list`, then `/mcp` in the Codex TUI.
 
-To check whether Interdict is active in the current chat, ask the agent to call
-`interdict_status`.
+To check whether Interdict is active in the current chat, use the MCP command
+printed at server startup, then ask the agent to call `interdict_status`.
 
 A held write is approved out-of-band: the agent reports the `approval_id`, the
 human runs `interdict approve <approval_id>` in their own terminal with

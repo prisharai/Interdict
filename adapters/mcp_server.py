@@ -94,11 +94,14 @@ def _blocked_summary(reason: str | None, message: str | None) -> str:
 
 def _held_summary(approval_id: str, simulation: dict | None) -> str:
     return (
-        "Interdict held this write for out-of-band approval: "
-        f"{_simulation_summary(simulation)}. approval_id={approval_id}. "
-        "Ask a human operator to run `interdict approve "
-        f"{approval_id}` in their terminal, then call "
-        f"run_approved_query(approval_id=\"{approval_id}\") to execute."
+        "This write requires out-of-band approval (the operator token must "
+        "never enter this chat). "
+        f"approval_id={approval_id}. "
+        f"{_simulation_summary(simulation)}.\n\n"
+        "NEXT STEPS:\n"
+        f"1. In YOUR terminal (not here): AGENT_OPERATOR_TOKEN=your_token interdict approve {approval_id}\n"
+        f"2. Then in this chat: call run_approved_query(approval_id=\"{approval_id}\")\n"
+        "   (No token needed - the approval already happened)"
     )
 
 
@@ -113,7 +116,8 @@ def _executed_summary(
     if action_id:
         return (
             f"Interdict allowed and executed {status or 'the write'}. "
-            f"undo={action_id}"
+            f"undo_id={action_id} - call revert_write(action_id=\"{action_id}\") "
+            "to reverse this change."
         )
     if status:
         return f"Interdict allowed and executed {status}. returned {row_count} row(s)."
@@ -1029,6 +1033,14 @@ def _preflight() -> None:
     print(
         f"interdict: ready -- guarding {redact_text(DB_DSN)} "
         f"(policy: {POLICY_PATH}, audit: {AUDIT_LOG_PATH})",
+        file=sys.stderr,
+    )
+    print(
+        "\nTo connect Claude Code:\n"
+        "  claude mcp add interdict \\\n"
+        f"    --env AGENT_DB_DSN={redact_text(DB_DSN)} \\\n"
+        '    --env AGENT_OPERATOR_TOKEN="..." \\\n'
+        "    -- interdict\n",
         file=sys.stderr,
     )
 
