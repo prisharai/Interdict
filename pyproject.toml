@@ -27,17 +27,11 @@ dependencies = [
     "mcp>=1.28.0",
     "pyyaml>=6.0.3",
     "anthropic>=0.111.0",
-    # UI-only: the optional local terminal interface. NEVER imported by engine/ and
-    # never on the request path -- purely for rendering the interactive TUI.
-    "rich>=13,<15",
 ]
 
 [project.scripts]
 # The MCP server an agent (Claude Code / Codex) launches over stdio.
 interdict = "adapters.mcp_server:main"
-interdict-demo = "examples.demo:cli_main"
-interdict-tui = "adapters.tui:main"
-interdict-stats = "adapters.tui:stats_main"
 
 [project.urls]
 Homepage = "https://interdict.vercel.app"
@@ -93,7 +87,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["engine", "adapters", "examples"]
+packages = ["engine", "adapters"]
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -101,12 +95,11 @@ include = [
     "/pyproject.toml",
     "/engine",
     "/adapters",
-    "/examples",
     "/policies",
 ]
 
-# Ship the example policies inside the wheel so a pip-installed command finds
-# its default policy (adapters/tui.py resolves ../policies/default.yaml). Lands
-# at the wheel root next to engine/ and adapters/.
+# Ship the default policy inside the wheel so a pip-installed MCP server finds
+# it without needing the source repo. Lands at the wheel root next to engine/
+# and adapters/.
 [tool.hatch.build.targets.wheel.force-include]
 "policies" = "policies"

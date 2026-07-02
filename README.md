@@ -106,60 +106,7 @@ To check whether Interdict is active in the current chat, ask the agent to call
 A held write is approved out-of-band with `approve_query` and the operator
 token, which the agent should not see.
 
-### 3. Optional local SQL console
-
-Interdict also ships a Rich terminal console for local demos and manual SQL. It
-is not the primary agent workflow.
-
-```bash
-interdict-tui
-```
-
-In the console, every statement goes through the same safety engine first.
-Safe reads and scoped writes just run. A risky write is simulated and shown
-before anything happens:
-
-```text
-interdict ▸ DELETE FROM clients WHERE active = true
-╭─ ⚠ CONFIRM WRITE ─────────────────────────────╮
-│ DELETE FROM clients WHERE active = true        │
-│ Blast radius: 2,300,000 rows (precise)         │
-│ Reversible: yes — an undo id will be kept      │
-╰────────────────────────────────────────────────╯
-  Execute? [y/n] (n):
-```
-
-Press `y` to run it, `n` to cancel. Nothing touched the database until you said
-yes. After a write runs you get an undo id; `\undo` reverses it.
-
-Because *you* wrote the SQL, a block is advice, not a wall — `\override` runs a
-blocked statement anyway (after a confirmation, fully audited, and still undoable
-when the statement's shape allows).
-
-**Commands:**
-
-| Command | What it does |
-|---|---|
-| *(any SQL)* | run it through the safety layer |
-| `\undo` | reverse the most recent write |
-| `\revert <id>` | reverse a specific write by its undo id |
-| `\override` | run the last **blocked** statement anyway (your call) |
-| `\stats` | what the layer has caught for you (see below) |
-| `\history` | this session's executed writes |
-| `\tables` | tables the policy allows |
-| `\help` · `\quit` | help · leave |
-
-**See your savings** any time with `\stats` (or `interdict-stats` from the shell):
-statements guarded, blocked, held for confirmation, overrides, reverts, and the
-largest blast radius it held back.
-
-> **Why this beats keeping a `.log`/dump backup.** A backup is the whole
-> database, slow to restore, and anonymous. Here every write is recorded
-> per-action and attributed, so you undo *one* mistaken statement instantly by
-> its id — instead of restoring the entire database and losing everyone else's
-> work since the last dump.
-
-### 4. Set up the dev database
+### 3. Set up the dev database
 
 Interdict needs a Postgres to talk to. The repo ships a seeded one:
 
@@ -177,8 +124,6 @@ other database with `AGENT_DB_DSN`. Re-seed from scratch with
 
 ```
 AI agent ──(MCP)──> [Interdict adapter] ──> [SAFETY ENGINE] ──> Postgres
-                                 │                 │
-optional local SQL console ──────┘                 │
                               parse → classify → policy → (simulate?) → decide
                                                    │           (record undo on writes)
                                                async: audit log, advisory intent check
@@ -190,9 +135,9 @@ optional local SQL console ──────┘                 │
   `EXPLAIN ANALYZE DELETE …` can't smuggle anything past), classifies it, checks
   it against a declarative YAML policy, and — only for a risky write — simulates
   the blast radius with a time-boxed `BEGIN; … ; ROLLBACK`.
-- **Adapters are thin renderers** over that engine. The MCP server is the main
-  product surface; the optional `rich` terminal console uses the same gate for
-  local demos/manual checks. Policy logic never lives in an adapter.
+- **The MCP adapter is thin glue** over that engine. The MCP server is the
+  product surface: agents call it instead of touching Postgres directly. Policy
+  logic never lives in the adapter.
 - **The hot path stays cheap.** Only blocking-vs-allowing is on it (in-memory,
   microseconds). Simulation is opt-in, gated to risky writes, and time-boxed
   (`statement_timeout` + `lock_timeout`). Audit logging and the optional LLM
@@ -218,7 +163,7 @@ enforced by a local benchmark gate.
 | Green corpus allowed (false positives) | 18 statements, **0%** |
 | Blast-radius accuracy (precise path) | **exact** affected-row count |
 | Undo round-trip | ~4 ms, conflict-checked, exact restore |
-| Automated tests | **308** |
+| Automated tests | **321** |
 
 Full methodology and per-rate tables: [`benchmarks/RESULTS.md`](benchmarks/RESULTS.md)
 and [`benchmarks/METRICS.md`](benchmarks/METRICS.md).
@@ -301,11 +246,10 @@ Before putting Interdict in front of a real database:
 
 ```
 engine/      # safety core: parse, classify, policy, simulate, undo, audit, intent, session
-adapters/    # mcp_server.py (agent layer), tui.py (optional local console)
+adapters/    # mcp_server.py (agent layer)
 policies/    # declarative YAML policy files
 corpus/      # red (should-block) + green (should-allow) query sets
 benchmarks/  # latency harness, RESULTS.md, METRICS.md, CI latency gate
-examples/    # runnable end-to-end demo
 db/          # Docker Postgres seed scripts (Pagila + large tables)
-tests/       # pytest suite (308 tests)
+tests/       # pytest suite (321 tests)
 ```

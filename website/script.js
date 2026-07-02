@@ -24,7 +24,7 @@ const runSteps = [
     expected:
       "The interdict command is available. This is the MCP layer for Claude, Codex, Cursor, or any MCP-capable agent.",
     note:
-      "Use interdict for agent integrations. The optional local console is interdict-tui.",
+      "Use interdict for agent integrations. It runs as the MCP safety layer between your agent and Postgres.",
   },
   {
     label: "Step 1",
