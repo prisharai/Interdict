@@ -6,6 +6,7 @@ revert can't be replayed; and that unsupported shapes are blocked by default.
 Skips cleanly when the dev DB isn't up.
 """
 
+import json
 import os
 
 import asyncpg
@@ -120,10 +121,25 @@ async def test_undo_record_is_the_audit_trail(db):
     rec = await store.get(conn, out.action_id)
     assert rec["agent"] == "agent-x"
     assert rec["stated_task"] == "cleanup"
+    principal = json.loads(rec["principal"])
+    assert principal["id"] == "agent-x"
+    assert principal["kind"] == "agent"
+    assert principal["stated_task"] == "cleanup"
     assert rec["operation"] == "delete"
     assert rec["target_table"] == "_undo_test"
     assert rec["row_count"] == 1
     assert rec["status"] == "active"
+
+
+async def test_revert_records_reverting_principal(db):
+    conn, store = db
+    out = await _run(conn, store, "DELETE FROM _undo_test WHERE id = 1")
+    result = await revert(conn, out.action_id, store, agent="operator-x")
+    assert result.ok
+    rec = await store.get(conn, out.action_id)
+    reverted_by = json.loads(rec["reverted_by"])
+    assert reverted_by["id"] == "operator-x"
+    assert reverted_by["kind"] == "agent"
 
 
 async def test_revert_cannot_be_replayed(db):

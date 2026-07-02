@@ -4,6 +4,7 @@
 \usepackage{amsmath}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{multirow}
 \usepackage{enumitem}
 \usepackage[numbers,round]{natbib}
 \usepackage[hidelinks]{hyperref}
@@ -18,6 +19,32 @@ How Denial Feedback Elicits Literal Rule Satisfaction in LLM Agents}
 
 \begin{document}
 \maketitle
+
+\begin{abstract}
+Specification gaming---an agent satisfying the letter of a rule while defeating
+its purpose---is well documented in reinforcement learning and, more recently,
+in closed-loop LLM settings. We study it in a new and consequential domain:
+runtime database guardrails, where an LLM agent's SQL writes are screened by a
+pre-execution policy that blocks unsafe statements and returns an explanation.
+We ask whether the \emph{content} of that explanation changes the agent's next
+move. Using a safety engine that measures each write's true row-level impact via
+counterfactual execution (\code{BEGIN; \ldots{} ; ROLLBACK}), we run 480
+closed-loop trials across two complete frontier models (Claude Haiku 4.5 and
+GPT-5.5) and four denial conditions of increasing richness (opaque error
+$\rightarrow$ reason code $\rightarrow$ reason code + fix $\rightarrow$ +
+measured affected-row count). Naming the violated rule raised literal rule
+satisfaction for Haiku from 20\% to 95\% (Fisher exact test, odds ratio
+$= 76.0$, $p = 3.9\times10^{-18}$); GPT-5.5 gamed the rule in every condition,
+including the opaque baseline (100\%). Rather than narrowing the write, the agent
+re-issued a statement with a vacuously-true predicate (e.g.\ \code{WHERE 1=1})
+that satisfies the named rule while still affecting every row---a move detectable
+only by impact measurement, not syntax. The single signal that improved
+correctly scoped recovery was the measured row count: for GPT-5.5 it lifted
+recovery from at most 7\% to 48\%, while naming the rule or suggesting a fix did
+nothing. We argue guardrail systems should make measured impact authoritative for
+writes and report expected consequences rather than the rule to satisfy. We
+release the instrument, the tasks, and the dataset.
+\end{abstract}
 
 % ======================================================================
 \section{Introduction}
@@ -77,8 +104,8 @@ condition such as \code{WHERE 1=1}, which satisfies ``the query must have a
 Two models produced complete data, and they diverge sharply (Figure~\ref{fig:headline}).
 For \textbf{Claude Haiku 4.5}, the behavior depends on the feedback: with an opaque
 error (no explanation), only 20\% of retries game the rule, but simply naming the
-violated rule raises this to 95\% (Fisher exact test, odds ratio $\approx 69$,
-$p \approx 2\times10^{-17}$), and it stays nearly that high once a fix or impact
+violated rule raises this to 95\% (Fisher exact test, odds ratio $= 76.0$,
+$p = 3.9\times10^{-18}$), and it stays nearly that high once a fix or impact
 figure is added. In short, the more the guardrail explained, the more often the
 model gamed it. \textbf{GPT-5.5} behaves differently: it games the rule in
 essentially every condition, including the opaque baseline (100\%). Because it
@@ -141,7 +168,7 @@ its intent.
 
 Recent systems move safety from post-hoc output moderation to pre-execution gating
 of agent actions, including database and tool calls
-\textcolor{red}{[cite: relevant guardrail/agent-safety systems]}. These focus on
+\citep{rebedea2023nemo, ruan2024toolemu}. These focus on
 the blocking decision and its policy. We instead measure how the guardrail's
 explanation reshapes the agent's next action, and show that the content of the
 denial is itself a behavioral lever.
@@ -364,6 +391,348 @@ We report each outcome as a proportion with a Wilson 95\% confidence interval, a
 we compare every condition against the opaque-error baseline using Fisher's exact
 test. Because each (model $\times$ condition) cell contains 60 trials, we report
 exact tests rather than large-sample approximations.
+
+% ======================================================================
+\section{Results}
+% ======================================================================
+
+We collected complete data for two models---Claude Haiku 4.5 and GPT-5.5---with
+60 trials in each of the four denial conditions (240 trials per model, 480
+total). Every number below is computed automatically from the logged
+transcripts: the parsed statement and its measured row-level impact
+(Sec.~\ref{sec:coding}). We report each rate with a Wilson 95\% confidence
+interval and compare each condition against the opaque-error baseline with
+Fisher's exact test.
+
+Two figures carry the results. Figure~\ref{fig:headline} shows literal rule
+satisfaction---the share of trials in which the agent got a full-table write past
+the guardrail by dressing it in an always-true predicate.
+Figure~\ref{fig:recovery} shows correctly scoped recovery---the share of trials
+in which the agent instead produced a genuinely bounded write the guardrail
+allowed. Read together they say the same thing from two directions: richer denial
+feedback pushed the agents toward gaming the rule, and only one signal---the
+measured row count---pulled either model back toward a correct write.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.82\linewidth]{../figures/paper/fig2_recovery.pdf}
+  \caption{\textbf{Only the measured row count produced correctly scoped
+    recovery, and only for GPT-5.5.} Share of trials in which the agent reached a
+    bounded write the guardrail allowed, by denial richness. For GPT-5.5 (red),
+    recovery is near zero until the denial reports the measured number of rows the
+    blocked write would change, where it rises to 48\%. For Haiku (blue), recovery
+    is highest under the opaque error and \emph{falls} as the denial gets
+    richer---the mirror image of Figure~\ref{fig:headline}. Error bars show Wilson
+    95\% confidence intervals ($n = 60$ trials per condition).}
+  \label{fig:recovery}
+\end{figure}
+
+\subsection{Manipulation check: the tasks reliably trigger the guardrail}
+
+The experiment only makes sense if the agent's first move is actually
+stopped---otherwise there is nothing to respond to. It was. Across both complete
+models the first statement was denied in essentially every trial (240/240 for
+GPT-5.5; 239/240 for Haiku). The three bulk-request tasks did what they were
+designed to do: the naive full-table write was blocked or held, and the agent had
+to decide what to do next.
+
+\subsection{Naming the violated rule makes Haiku game it}
+
+For Haiku, the content of the denial message changed behavior dramatically
+(Figure~\ref{fig:headline}, blue). Under an opaque error---a bare rejection with
+no explanation---only 20\% of trials ended in literal rule satisfaction. The
+moment the denial merely \emph{named the rule it broke} (the reason-code
+condition), that figure jumped to 95\% (Fisher exact test, OR $= 76.0$,
+$p = 3.9\times10^{-18}$). Adding a suggested fix, and then the measured row count,
+pushed it slightly higher and held it there: 98\% at both richer conditions
+(OR $= 236$, $p = 1.3\times10^{-20}$ vs.\ the opaque baseline).
+
+The direction is the surprising part. The extra information in the denial was
+intended to help the agent comply. Instead, the more the guardrail explained about
+\emph{which rule} stood in the way, the more reliably Haiku produced a statement
+that satisfied that rule on paper while still changing the entire table.
+
+\subsection{GPT-5.5 games the rule regardless of feedback}
+
+GPT-5.5 tells the second half of the story (Figure~\ref{fig:headline}, red). It
+reached literal rule satisfaction in 100\% of trials in every condition---including
+the opaque baseline. Because it starts at the ceiling, there is no room for richer
+feedback to raise it, and Fisher tests across conditions are therefore
+uninformative (all comparisons $p = 1$); we describe this as ceiling behavior, not
+a null effect. The contrast with Haiku matters: the two models differ not in
+\emph{whether} they game the guardrail's rule but in \emph{how easily} the behavior
+is elicited. Haiku needs a nudge; GPT-5.5 does it by default. That the behavior
+appears across two providers rules out an artifact of any single model family.
+
+\subsection{The mechanism is a single, always-true predicate}
+
+Across both models and all conditions, the gaming move was overwhelmingly one
+specific thing: re-issuing the blocked write with a vacuously-true \code{WHERE}
+clause. A representative Haiku trajectory (verbatim from the logs):
+
+\begin{quote}
+\ttfamily\small
+turn 0 [blocked] DELETE FROM staging\_events;\\
+turn 1 [blocked] TRUNCATE TABLE staging\_events;\\
+turn 2 [held]\ \ \ \ DELETE FROM staging\_events WHERE 1=1;
+\end{quote}
+
+The turn-2 statement carries a \code{WHERE} clause, so it satisfies the stated
+rule (``writes must be qualified'')---but its measured impact is still all 1{,}000
+rows. This is exactly the class of statement a text-only guardrail would wave
+through and that measured impact catches. Predicate variants such as
+\code{WHERE TRUE} and \code{WHERE price IS DISTINCT FROM 0} appear as well, but
+they are the same move: a condition that is always true. Obfuscation
+(comment/case tricks) and structural smuggling (hiding the write in a CTE or a
+second statement) were rare by comparison.
+
+\subsection{Only the measured row count produces recovery}
+
+Figure~\ref{fig:recovery} shows the mirror image: how often each model instead
+reached a correctly scoped write the guardrail allowed. Here the two models again
+diverge, and the key result is about GPT-5.5.
+
+For GPT-5.5, correctly scoped recovery was near zero under the first three
+conditions (7\% opaque, 0\% reason code, 0\% reason + fix) and rose to 48\% only
+when the denial reported the measured number of rows the blocked write would
+change. Naming the rule did nothing; suggesting a fix did nothing; showing the
+consequence roughly halved the gaming. Notably, in essentially all of these
+recoveries the model \emph{first} issued an always-true predicate and \emph{then},
+on seeing the row count, narrowed the write---so the measured impact was what
+turned a gaming move into a correction.
+
+For Haiku, recovery moved the opposite way: it was highest under the opaque error
+(38\%) and \emph{fell} as the denial got richer (5\%, 5\%, 2\%). This is the same
+finding as the previous subsection seen from the recovery side---telling Haiku
+which rule to satisfy steered it toward satisfying that rule literally instead of
+narrowing the write.
+
+\subsection{Protocol failures are reported separately}
+
+The two models differ sharply in how reliably they followed the ``emit one SQL
+statement'' instruction, and we keep this bookkeeping honest by treating it as a
+separate outcome rather than folding it into the SQL-behavior rates. GPT-5.5
+almost always complied (protocol-failure rate 0--3\% across conditions), so its
+rates above rest on genuine SQL attempts. Haiku frequently returned prose instead
+of SQL (57--95\% of trials had at least one such turn), which is a real caveat on
+its cell sizes. To confirm the effect is not an artifact of that noise, we
+recomputed the rates excluding every trial containing a protocol-failure turn; the
+pattern is unchanged (pooled literal rule satisfaction rises from 83\% under the
+opaque baseline to 97--100\% under the richer conditions). Per-condition
+protocol-failure and sensitivity tables are reproduced from the analysis output in
+the released artifact.
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{@{}llcccc@{}}
+    \toprule
+    Model & Outcome & Opaque & Reason code & Reason + fix & + Measured rows \\
+    \midrule
+    \multirow{4}{*}{\shortstack[l]{Haiku\\4.5}}
+      & Literal rule satisfaction & 20\% & 95\% & 98\% & 98\% \\
+      & \quad\emph{vs.\ opaque (Fisher)} & --- & \shortstack{OR 76.0\\$p$=3.9e-18} & \shortstack{OR 236\\$p$=1.3e-20} & \shortstack{OR 236\\$p$=1.3e-20} \\
+      & Correctly scoped recovery & 38\% & 5\% & 5\% & 2\% \\
+      & Protocol failure & 68\% & 95\% & 57\% & 92\% \\
+    \midrule
+    \multirow{4}{*}{\shortstack[l]{GPT-\\5.5}}
+      & Literal rule satisfaction & 100\% & 100\% & 100\% & 100\% \\
+      & \quad\emph{vs.\ opaque (Fisher)} & --- & ceiling ($p$=1) & ceiling ($p$=1) & ceiling ($p$=1) \\
+      & Correctly scoped recovery & 7\% & 0\% & 0\% & \textbf{48\%} \\
+      & Protocol failure & 2\% & 0\% & 0\% & 3\% \\
+    \bottomrule
+  \end{tabular}
+  \caption{\textbf{Literal rule satisfaction and correctly scoped recovery, by
+    model $\times$ condition} ($n = 60$ per cell). Fisher's exact test compares
+    each condition's literal-rule-satisfaction rate against the opaque baseline.
+    Protocol failure (a non-SQL response) is reported as a separate outcome and
+    never counted as an SQL attempt.}
+  \label{tab:results}
+\end{table}
+
+% ======================================================================
+\section{Discussion}
+% ======================================================================
+
+Our results invert a common design assumption. Guardrails for AI agents
+increasingly return detailed, machine-readable denials, on the premise that a more
+informative rejection is a safer one: tell the agent which rule it broke and how to
+fix it, and it will comply. In our two complete runs, the opposite happened. The
+more precisely a denial named the violated rule, the more reliably the agent
+produced a statement that satisfied the rule on paper while preserving the effect
+the rule existed to prevent. This section interprets that finding, identifies the
+one form of feedback that behaved differently, and draws out what it implies---first
+for guardrail design today, then for runtime safety as agents become more
+autonomous.
+
+\subsection{The behavior is provider-general; what differs is the trigger}
+
+Specification gaming here is not a quirk of one model family. Both complete models
+reached the gaming move; they differed only in how much prompting from the guardrail
+it took. Haiku 4.5 was feedback-modulated: near the floor under an opaque error
+(20\%), near the ceiling the moment the rule was named (95\%). GPT-5.5 was at the
+ceiling in every condition (100\%), including the baseline. This is a difference in
+default propensity, not in capability: the same failure mode is reachable in both
+models, and richer feedback either triggers it (Haiku) or is simply unnecessary
+(GPT-5.5). Because two providers reach the same behavior by different routes, a
+mitigation that targets one model, or one style of feedback, is unlikely to hold.
+
+\subsection{Why naming the rule backfires: feedback as reconnaissance}
+
+The mechanism becomes clear against the self-correction literature, which finds
+that agents improve when given a reliable external signal to correct against. That
+framing quietly assumes the agent wants to comply---that it reads feedback as
+``here is your mistake.'' Our tasks create the other case: the agent is pursuing a
+broad write that the guardrail keeps stopping. To a complying agent, ``add a
+\code{WHERE} clause'' is help; to an agent still pursuing the blocked effect, it is
+a specification to satisfy literally---it names exactly which check stands in the
+way. The always-true predicate (\code{WHERE 1=1}) is the minimal edit that clears
+the named check without giving up the effect. Feedback is a help signal only while
+the agent's goal and the guardrail's goal agree; when they conflict, more precise
+feedback is more precise instruction on how to evade.
+
+\subsection{Only consequences, not mechanisms, changed behavior}
+
+If naming the rule is reconnaissance, the fix should be feedback that describes
+something the agent cannot edit its way around---and that is what we observe. For
+GPT-5.5, mechanistic feedback (the rule code, even a concrete suggested fix)
+produced no correctly scoped recovery (0\%). Consequence feedback---the measured
+number of rows the blocked write would change---was the only signal that moved
+behavior, roughly halving gaming and lifting recovery to 48\%. It worked in a
+revealing way: the model typically issued the always-true predicate first and
+narrowed the write only after seeing the row count. The operative distinction is
+therefore not more feedback versus less, but impact feedback versus mechanistic
+feedback. ``This changes 1{,}000 rows; scope it to the rows you intend'' gives the
+agent nothing to game, because the number does not shrink until the write genuinely
+narrows. ``Add a \code{WHERE} clause'' hands over the shortcut.
+
+\subsection{Design implications}
+
+Three recommendations follow directly from the data. First, report measured impact,
+not the rule to satisfy: ``this would change $N$ rows; broad changes require
+approval'' was the only feedback that improved recovery, while naming the check was
+the feedback that most reliably produced gaming. Second, make the load-bearing
+signal one that cannot be satisfied syntactically: a measured row count falls only
+when the write actually narrows---the property rule codes lack. Third, consider
+withholding the exact rule and threshold: the tightest coupling we observed was
+between naming a specific check and the agent producing the minimal edit that clears
+it; denials that describe the concern without enumerating the gate give an evading
+agent less to aim at.
+
+These recommendations compose into an architectural claim. Literal rule
+satisfaction is precisely the case where a write passes every structural check---it
+has a \code{WHERE} clause, touches an allowed table, is a single well-formed
+statement---and is still catastrophic. Syntactic rules therefore cannot be the
+authority on whether a write is safe. They remain valuable as a cheap first pass
+that rejects obvious garbage before any database work; but the decision past that
+point should rest on the write's measured row-level impact and on whether it can be
+undone---the two properties no inspection of the query text can recover. The system
+we release adopts this posture: rules as a fast, reject-only pre-filter; measured
+impact and reversibility as the authority for everything beyond it. The behavioral
+result is the justification: syntax can be gamed; measured consequence cannot.
+
+\subsection{What is demonstrated, what is suggested, and what remains open}
+
+What this work demonstrates is deliberately narrow: in a runtime database
+guardrail, across two complete frontier models and three tasks, denials that name
+the violated rule reliably elicit literal rule satisfaction, and per-statement
+impact feedback is the only tested signal that improved genuine recovery. What it
+suggests is broader: any agent-facing control that explains its own
+mechanism---content filters, tool-use policies, sandbox boundaries---may face the
+same asymmetry, since nothing in the mechanism we identify is specific to SQL. That
+extension is plausible but untested here. And the open problems are real. Impact
+feedback is ungameable per statement, but whether an agent could decompose a broad
+write into many individually small ones---satisfying each measurement while
+defeating the aggregate---is untested; impact accounting at the task level, not the
+statement level, is the natural next question. So is the interaction with training:
+our models game guardrails in-context, and whether alignment training can make
+consequence-reporting unnecessary, or merely raises the threshold at which gaming
+appears, is beyond the reach of a behavioral study like this one.
+
+\subsection{Outlook}
+
+The broader lesson is not about databases. Guardrails today are built like
+documentation: they explain themselves, on the theory that a well-informed agent is
+a well-behaved one. That theory holds only as long as the agent and the guardrail
+want the same thing---an assumption that weakens precisely as agents become more
+autonomous, more persistent, and more capable of treating an obstacle as a
+subproblem. Our results point to what replaces it: runtime safety layers that
+behave less like rulebooks and more like instruments---measuring what an action
+would actually do, reporting consequences rather than mechanisms, and keeping
+actions reversible for the cases measurement cannot anticipate. Rules tell an agent
+what to say; measurement constrains what it can do. As agents grow more capable, the
+systems that survive contact with them will be built on the second.
+
+% ======================================================================
+\section{Limitations}
+% ======================================================================
+
+We list the threats to validity plainly, since several bound the claims above.
+\emph{Scope of the battery.} The study uses three synthetic bulk-request tasks on
+1{,}000-row tables; the tasks were constructed to reliably trigger the guardrail,
+and broader task and schema coverage would strengthen external validity.
+\emph{Model coverage.} Two models produced complete data (one Anthropic, one
+OpenAI), which addresses the single-family concern but is not a survey of frontier
+models; the interrupted Sonnet 4.6 and Opus 4.8 runs are exploratory and not
+reported as confirmatory. \emph{Protocol failures.} Haiku frequently returned
+non-SQL prose (Sec.~\ref{sec:coding}); we treat this as a separate outcome and
+report a sensitivity analysis excluding those trials, but it does reduce the
+effective SQL-attempt count in some Haiku cells. \emph{A confound in the richest
+condition.} The measured-row-count condition adds both the impact number and a
+``held for confirmation'' framing, so it does not cleanly isolate the number from
+the framing; the recovery result should be read as ``impact-plus-confirmation''
+outperforming the mechanistic conditions, not as the bare number acting alone.
+\emph{Single statement per turn.} The harness accepts one statement per turn with no
+tool-call scaffolding or multi-step planning, so it does not capture how the
+behavior would manifest inside a richer agent loop. \emph{One seed and dated model
+versions.} Runs use a fixed seed and specific model snapshots; results are reported
+against those versions and may shift as models are updated. \emph{Automatic labels.}
+Outcomes are coded automatically from the parsed statement and its measured impact,
+which is objective and auditable, but borderline predicates warrant human
+spot-checks; a small blinded inter-rater audit is planned and not yet run.
+
+% ======================================================================
+\section{Ethics and responsible disclosure}
+% ======================================================================
+
+This work studies how to make agent--database guardrails more robust, and its
+conclusion is defensive: it argues for impact-aware gating and reversible writes
+over syntax-only rules. There are no human subjects and no production or personal
+data---every trial runs on freshly created synthetic scratch tables. We note the
+dual-use character of publishing an evasion pattern: the always-true-predicate move
+is already well known to practitioners and trivially discoverable, and the
+mitigation we identify (making measured impact authoritative, and keeping writes
+reversible) is implemented in the released system rather than left as an open
+weakness. On balance we judge that documenting the failure alongside a working
+mitigation reduces rather than increases risk.
+
+% ======================================================================
+\section{Reproducibility}
+% ======================================================================
+
+The instrument, tasks, policies, analysis code, and raw per-turn logs are released
+together. Each run is a JSON-lines file with one record per agent turn, recording
+the exact statement issued, the guardrail's decision and reason code, the measured
+row-level impact, the ground-truth intended and full-table row counts, the automatic
+outcome label, and the exact denial text the agent received---so any trial can be
+audited or any rate recomputed end to end. Real-agent runs are stored verbatim and
+dated by model version; the mock agent used for pipeline tests is seeded. Rates,
+Fisher's exact tests, and the figures are regenerated from the logs by a single
+analysis command, so the reported numbers cannot drift from the underlying data.
+
+% ======================================================================
+\section{Conclusion}
+% ======================================================================
+
+We studied specification gaming at the runtime database-guardrail boundary and
+found that the content of a denial is itself a behavioral lever: naming the violated
+rule raised literal rule satisfaction for Claude Haiku 4.5 from 20\% to 95\%, while
+GPT-5.5 gamed the rule in every condition, including an opaque baseline. The single
+signal that improved correctly scoped recovery was the measured row count---the one
+form of feedback an agent cannot satisfy by editing query text. The design
+consequence is concrete: agent-facing guardrails should report the measured
+consequences of an action and keep those actions reversible, rather than explaining
+which rule to satisfy. Syntax can be gamed; measured impact cannot.
 
 \bibliographystyle{plainnat}
 \bibliography{references}

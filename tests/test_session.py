@@ -19,6 +19,8 @@ import asyncpg
 import pytest
 
 from engine.policy import Policy
+from engine.schema import Decision as SchemaDecision
+from engine.schema import ReasonCode as SchemaReasonCode
 from engine.session import ALLOW, BLOCK, CONFIRM, GuardedSession
 from engine.simulate import SimulationConfig, load_unique_columns
 from engine.undo import UndoConfig, UndoStore
@@ -57,9 +59,7 @@ async def sess():
         uniq = await load_unique_columns(c)
     store = UndoStore(_POLICY.undo)
     try:
-        yield GuardedSession(
-            pool, _POLICY, undo_store=store, unique_columns=uniq
-        )
+        yield GuardedSession(pool, _POLICY, undo_store=store, unique_columns=uniq)
     finally:
         async with pool.acquire() as c:
             await c.execute("DROP TABLE IF EXISTS _sess_test")
@@ -84,6 +84,9 @@ async def test_scoped_write_allows_and_runs(sess):
 async def test_full_table_write_requires_confirmation(sess):
     prop = await sess.propose("DELETE FROM _sess_test WHERE active = true")
     assert prop.verdict == CONFIRM
+    proposal_decision = SchemaDecision.from_dict(prop.summary()["decision"])
+    assert proposal_decision.verdict == "hold"
+    assert proposal_decision.impact.rows_affected == 1000
     # blast radius is measured and surfaced for the UI
     assert prop.blast_radius == 1000
     assert prop.blast_method == "precise"
@@ -91,11 +94,16 @@ async def test_full_table_write_requires_confirmation(sess):
     # Without confirmation, nothing runs and the table is untouched.
     refused = await sess.execute(prop)
     assert not refused.executed and refused.refused == "needs_confirmation"
+    refused_decision = SchemaDecision.from_dict(refused.to_dict()["decision"])
+    assert refused_decision.verdict == "hold"
     assert await _count(sess) == 1000
 
     # The human confirms -> it runs.
     ok = await sess.execute(prop, force=True)
     assert ok.executed and ok.error is None
+    ok_decision = SchemaDecision.from_dict(ok.to_dict()["decision"])
+    assert ok_decision.verdict == "allow"
+    assert ok_decision.impact.rows_affected == 1000
     assert await _count(sess) == 0
 
 
@@ -104,8 +112,12 @@ async def test_blocked_write_never_runs_even_with_force(sess):
     prop = await sess.propose("DELETE FROM _sess_test")
     assert prop.verdict == BLOCK
     assert prop.violations and prop.violations[0]["reason_code"]
+    proposal_decision = SchemaDecision.from_dict(prop.summary()["decision"])
+    assert proposal_decision.reason_code == SchemaReasonCode.UNBOUNDED_WRITE
     res = await sess.execute(prop, force=True)  # force must NOT override a block
     assert not res.executed and res.refused == "blocked"
+    result_decision = SchemaDecision.from_dict(res.to_dict()["decision"])
+    assert result_decision.verdict == "deny"
     assert await _count(sess) == 1000
 
 
@@ -113,6 +125,9 @@ async def test_executed_write_is_reversible(sess):
     prop = await sess.propose("UPDATE _sess_test SET val = 'gone' WHERE id = 7")
     res = await sess.execute(prop)
     assert res.executed and res.action_id and res.reversible
+    decision = SchemaDecision.from_dict(res.to_dict()["decision"])
+    assert decision.verdict == "allow"
+    assert decision.undo.handle == res.action_id
     async with sess._pool.acquire() as c:
         assert await c.fetchval("SELECT val FROM _sess_test WHERE id = 7") == "gone"
     rev = await sess.revert(res.action_id)

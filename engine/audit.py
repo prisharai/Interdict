@@ -31,6 +31,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from engine.schema import PrincipalKind, principal_from_legacy
 from engine.security import audit_safe
 
 # Bound the queue so a misbehaving/backed-up writer can't grow memory without
@@ -75,6 +76,7 @@ class AuditLog:
         query path.
         """
         entry.setdefault("ts", time.time())
+        entry.setdefault("principal", _principal_for_audit(entry))
         entry = audit_safe(entry)
         try:
             self._queue.put_nowait(entry)
@@ -136,3 +138,22 @@ class AuditLog:
         except asyncio.CancelledError:
             pass
         self._task = None
+
+
+def _principal_for_audit(entry: dict[str, Any]) -> dict[str, Any]:
+    """Derive a v2 principal for legacy audit call sites."""
+    existing = entry.get("principal")
+    if isinstance(existing, dict):
+        return existing
+
+    identity = entry.get("agent") or entry.get("actor") or entry.get("operator")
+    kind = (
+        PrincipalKind.HUMAN.value
+        if entry.get("operator")
+        else PrincipalKind.AGENT.value
+    )
+    return principal_from_legacy(
+        identity,
+        kind=kind,
+        stated_task=entry.get("stated_task"),
+    ).to_dict()

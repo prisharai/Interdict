@@ -131,6 +131,9 @@ async def test_every_statement_is_audited(session):
     assert ok["stated_task"] == "[REDACTED]"
     assert ok["stated_task_sha256"] == sha256(task.encode("utf-8")).hexdigest()
     assert ok["agent"] == "agent-x"
+    assert ok["principal"]["id"] == "agent-x"
+    assert ok["principal"]["kind"] == "agent"
+    assert ok["principal"]["stated_task"] == "[REDACTED]"
     assert ok["status"] == "SELECT 1"
     assert ok["error"] is None
     assert "duration_ms" in ok and isinstance(ok["duration_ms"], (int, float))
@@ -138,3 +141,4 @@ async def test_every_statement_is_audited(session):
 
     failed = by_sql_hash[sha256(b"SELECT * FROM nope_not_here").hexdigest()]
     assert failed["error"] is not None  # failures are logged too (corpus)
+    assert failed["principal"]["id"] == "anonymous"

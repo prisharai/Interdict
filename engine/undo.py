@@ -43,6 +43,7 @@ from pglast import ast, parse_sql
 from pglast.stream import RawStream
 
 from engine.classifier import WRITE, Classification
+from engine.schema import PrincipalKind, principal_from_legacy
 from engine.security import client_db_error
 
 # Primary-key columns of a relation, in index order.
@@ -61,6 +62,16 @@ FROM pg_attribute
 WHERE attrelid = $1::regclass AND attnum > 0 AND NOT attisdropped
 ORDER BY attnum
 """
+
+_PRE_V2_PRINCIPAL_JSON = json.dumps(
+    {
+        "id": "pre-v2",
+        "kind": "service",
+        "delegated_by": None,
+        "task_id": None,
+        "stated_task": None,
+    }
+)
 
 
 def _q(ident: str) -> str:
@@ -243,6 +254,7 @@ class UndoStore:
                 created_at    timestamptz NOT NULL DEFAULT now(),
                 agent         text,
                 stated_task   text,
+                principal     jsonb NOT NULL DEFAULT '{_PRE_V2_PRINCIPAL_JSON}'::jsonb,
                 target_table  text NOT NULL,
                 operation     text NOT NULL,
                 pk_columns    text[] NOT NULL,
@@ -250,13 +262,22 @@ class UndoStore:
                 before_images jsonb NOT NULL,
                 after_images  jsonb NOT NULL DEFAULT '[]'::jsonb,
                 status        text NOT NULL DEFAULT 'active',
-                reverted_at   timestamptz
+                reverted_at   timestamptz,
+                reverted_by   jsonb
             )"""
         )
         # Migrate an older log that predates after_images.
         await conn.execute(
             f"ALTER TABLE {self._log} "
             "ADD COLUMN IF NOT EXISTS after_images jsonb NOT NULL DEFAULT '[]'::jsonb"
+        )
+        await conn.execute(
+            f"ALTER TABLE {self._log} "
+            f"ADD COLUMN IF NOT EXISTS principal jsonb NOT NULL "
+            f"DEFAULT '{_PRE_V2_PRINCIPAL_JSON}'::jsonb"
+        )
+        await conn.execute(
+            f"ALTER TABLE {self._log} " "ADD COLUMN IF NOT EXISTS reverted_by jsonb"
         )
         self._ensured = True
 
@@ -277,6 +298,7 @@ class UndoStore:
         action_id,
         agent,
         stated_task,
+        principal,
         target_table,
         operation,
         pk_columns,
@@ -286,12 +308,14 @@ class UndoStore:
     ) -> None:
         await conn.execute(
             f"""INSERT INTO {self._log}
-                (action_id, agent, stated_task, target_table, operation,
+                (action_id, agent, stated_task, principal, target_table, operation,
                  pk_columns, row_count, before_images, after_images)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)""",
+                VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8,
+                        $9::jsonb, $10::jsonb)""",
             action_id,
             agent,
             stated_task,
+            json.dumps(principal),
             target_table,
             operation,
             pk_columns,
@@ -302,19 +326,25 @@ class UndoStore:
 
     async def get(self, conn, action_id) -> dict | None:
         row = await conn.fetchrow(
-            f"""SELECT action_id::text, agent, stated_task, target_table, operation,
+            f"""SELECT action_id::text, agent, stated_task, principal::text,
+                       target_table, operation,
                        pk_columns, row_count, before_images::text,
-                       after_images::text, status
+                       after_images::text, status, reverted_by::text
                 FROM {self._log} WHERE action_id = $1::uuid""",
             action_id,
         )
         return dict(row) if row else None
 
-    async def mark_reverted(self, conn, action_id) -> None:
+    async def mark_reverted(self, conn, action_id, reverted_by: dict) -> None:
         await conn.execute(
             f"UPDATE {self._log} SET status='reverted', reverted_at=now() "
             "WHERE action_id=$1::uuid",
             action_id,
+        )
+        await conn.execute(
+            f"UPDATE {self._log} SET reverted_by=$2::jsonb WHERE action_id=$1::uuid",
+            action_id,
+            json.dumps(reverted_by),
         )
 
 
@@ -411,6 +441,7 @@ async def execute_with_undo(
         )
 
     action_id = uuid4()
+    principal = principal_from_legacy(agent, stated_task=stated_task).to_dict()
     tr = conn.transaction()
     await tr.start()
     try:
@@ -436,6 +467,7 @@ async def execute_with_undo(
             action_id=action_id,
             agent=agent,
             stated_task=stated_task,
+            principal=principal,
             target_table=plan.target,
             operation=plan.operation,
             pk_columns=pk,
@@ -516,7 +548,15 @@ async def revert(
         return RevertResult(False, action_id, error="no such action_id")
     if rec["status"] == "reverted":
         return RevertResult(False, action_id, error="already reverted")
-    if require_agent_match and rec["agent"] and agent != rec["agent"]:
+    original_principal = json.loads(rec["principal"])
+    original_id = original_principal.get("id")
+    if require_agent_match and original_id not in (None, "anonymous", "pre-v2"):
+        authorized = agent == original_id
+    else:
+        authorized = not (
+            require_agent_match and rec["agent"] and agent != rec["agent"]
+        )
+    if not authorized:
         return RevertResult(
             False,
             action_id,
@@ -534,6 +574,7 @@ async def revert(
         if op == "update"
         else (rec["after_images"],) if op == "insert" else (rec["before_images"],)
     )
+    reverted_by = principal_from_legacy(agent, kind=PrincipalKind.AGENT.value).to_dict()
 
     tr = conn.transaction()
     await tr.start()
@@ -553,7 +594,7 @@ async def revert(
                     "changed since the write; manual resolution required"
                 ),
             )
-        await store.mark_reverted(conn, action_id)
+        await store.mark_reverted(conn, action_id, reverted_by)
         await tr.commit()
     except Exception as exc:
         await tr.rollback()

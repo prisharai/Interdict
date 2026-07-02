@@ -16,6 +16,8 @@ from adapters.mcp_server import ShadowSession
 from engine.audit import AuditLog
 from engine.intent import IntentConfig
 from engine.policy import Policy
+from engine.schema import Decision as SchemaDecision
+from engine.schema import ReasonCode as SchemaReasonCode
 from engine.simulate import SimulationConfig, load_unique_columns
 from engine.undo import UndoConfig, UndoStore
 
@@ -65,6 +67,9 @@ async def test_blocked_statement_never_touches_the_database(make_session):
     assert res["error"] is None  # the DB was never asked
     assert res["rows"] == []
     assert any(v["reason_code"] == "TABLE_NOT_ALLOWED" for v in res["violations"])
+    decision = SchemaDecision.from_dict(res["decision"])
+    assert decision.verdict == "deny"
+    assert decision.reason_code == SchemaReasonCode.TABLE_NOT_ALLOWED
 
 
 async def test_allowed_read_runs(make_session):
@@ -73,6 +78,9 @@ async def test_allowed_read_runs(make_session):
     assert res["blocked"] is False
     assert res["row_count"] == 1
     assert res["rows"][0]["film_id"] == 1
+    decision = SchemaDecision.from_dict(res["decision"])
+    assert decision.verdict == "allow"
+    assert decision.reason_code == SchemaReasonCode.ALLOW
 
 
 async def test_injected_limit_caps_rows_returned(make_session):
@@ -148,6 +156,14 @@ async def test_risky_write_held_until_operator_approval(make_session, scratch):
     assert res["approval_id"]
     assert res["blocked"] is False
     assert res["simulation"]["exact_rows"] == 29
+    decision = SchemaDecision.from_dict(res["decision"])
+    assert decision.verdict == "hold"
+    assert decision.reason_code == SchemaReasonCode.IMPACT_OVER_THRESHOLD
+    assert decision.impact.rows_affected == 29
+    assert decision.hold.approval_id == res["approval_id"]
+    pending = sess.pending_approvals()[0]
+    assert pending["principal"]["id"] == "anonymous"
+    assert pending["principal"]["kind"] == "agent"
     assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
 
     # Out-of-band operator approval (the agent can't reach this) runs it.
@@ -245,6 +261,10 @@ async def test_write_is_reversible_through_adapter(make_session, scratch):
     )
     assert res["reversible"] is True
     assert res["undo_action_id"]
+    decision = SchemaDecision.from_dict(res["decision"])
+    assert decision.verdict == "allow"
+    assert decision.undo.handle == res["undo_action_id"]
+    assert decision.undo.reversible is True
     tagged = "SELECT count(*) FROM _sim_scratch WHERE label = 'tagged'"
     assert await scratch.fetchval(tagged) == 3
 
@@ -412,6 +432,9 @@ async def test_non_reversible_reason_is_surfaced(make_session, scratch):
     assert res["reversible"] is False
     assert res["undo_reason"] is not None
     assert "FROM/USING" in res["undo_reason"]
+    decision = SchemaDecision.from_dict(res["decision"])
+    assert decision.verdict == "deny"
+    assert decision.reason_code == SchemaReasonCode.NON_REVERSIBLE_WRITE
 
 
 async def test_audit_status_reports_queue_health(make_session):

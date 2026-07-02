@@ -21,6 +21,17 @@ from engine.audit import AuditLog
 from engine.classifier import DDL, WRITE, classify
 from engine.intent import check_intent, llm_second_opinion
 from engine.policy import Policy, ReasonCode, apply_blast_radius, apply_intent, evaluate
+from engine.schema import (
+    Decision as SchemaDecision,
+)
+from engine.schema import (
+    PrincipalKind,
+    decision_from_legacy_policy,
+    principal_from_legacy,
+)
+from engine.schema import (
+    ReasonCode as SchemaReasonCode,
+)
 from engine.security import client_db_error, diagnostic_error, redact_text
 from engine.simulate import is_risky_write, load_unique_columns, simulate
 from engine.undo import UndoStore, execute_with_undo, revert
@@ -99,6 +110,7 @@ class PendingApproval:
     created_at: float
     simulation: dict | None
     intent: dict | None
+    principal: dict
 
 
 class ShadowSession:
@@ -145,6 +157,7 @@ class ShadowSession:
             "sql": pending.sql,
             "stated_task": pending.stated_task,
             "agent": pending.agent,
+            "principal": pending.principal,
             "created_at": pending.created_at,
             "simulation": pending.simulation,
             "intent": pending.intent,
@@ -281,6 +294,7 @@ class ShadowSession:
                 primary_violation["reason_code"] if primary_violation else None
             )
             block_message = primary_violation["message"] if primary_violation else None
+            schema_decision = decision_from_legacy_policy(decision).to_dict()
             self._audit.record(
                 {
                     "event": "query",
@@ -291,6 +305,7 @@ class ShadowSession:
                     "violations": violations,
                     "simulation": decision.simulation,
                     "intent": decision.intent,
+                    "decision": schema_decision,
                     "classification": classification.to_dict(),
                 }
             )
@@ -307,6 +322,7 @@ class ShadowSession:
                 "requires_confirmation": False,
                 "simulation": decision.simulation,
                 "intent": decision.intent,
+                "decision": schema_decision,
             }
 
         # Allowed but gated: a risky write whose blast radius needs confirmation.
@@ -319,6 +335,9 @@ class ShadowSession:
             and not operator_approved
         ):
             approval_id = str(uuid4())
+            schema_decision = decision_from_legacy_policy(
+                decision, approval_id=approval_id
+            ).to_dict()
             self._pending_approvals[approval_id] = PendingApproval(
                 sql=sql,
                 stated_task=stated_task,
@@ -326,6 +345,9 @@ class ShadowSession:
                 created_at=time.time(),
                 simulation=decision.simulation,
                 intent=decision.intent,
+                principal=principal_from_legacy(
+                    agent, stated_task=stated_task
+                ).to_dict(),
             )
             self._audit.record(
                 {
@@ -338,6 +360,7 @@ class ShadowSession:
                     "approval_id": approval_id,
                     "simulation": decision.simulation,
                     "intent": decision.intent,
+                    "decision": schema_decision,
                     "classification": classification.to_dict(),
                 }
             )
@@ -353,6 +376,7 @@ class ShadowSession:
                 "approval_id": approval_id,
                 "simulation": decision.simulation,
                 "intent": decision.intent,
+                "decision": schema_decision,
             }
 
         # Allowed, or observe-mode: decide what actually runs. Only *enforcing*
@@ -407,6 +431,16 @@ class ShadowSession:
                             ),
                             "statement_index": 0,
                         }
+                        schema_decision = SchemaDecision.deny(
+                            reason_code=SchemaReasonCode.NON_REVERSIBLE_WRITE,
+                            explanation=violation["message"],
+                            repair_hint=violation["suggested_fix"],
+                            impact=(
+                                decision_from_legacy_policy(decision).impact
+                                if decision is not None
+                                else None
+                            ),
+                        ).to_dict()
                         self._audit.record(
                             {
                                 "event": "query",
@@ -416,9 +450,7 @@ class ShadowSession:
                                 "blocked": True,
                                 "violations": [violation],
                                 "undo_reason": undo_reason,
-                                "decision": (
-                                    decision.to_dict() if decision is not None else None
-                                ),
+                                "decision": schema_decision,
                                 "classification": classification.to_dict(),
                             }
                         )
@@ -444,6 +476,7 @@ class ShadowSession:
                             "intent": (
                                 decision.intent if decision is not None else None
                             ),
+                            "decision": schema_decision,
                         }
                 else:
                     # prepare()+fetch() runs the statement once and exposes BOTH
@@ -459,6 +492,12 @@ class ShadowSession:
             diagnostic = None
 
         elapsed_ms = (time.perf_counter() - started) * 1000.0
+        schema_decision = decision_from_legacy_policy(
+            decision,
+            undo_handle=action_id,
+            reversible=reversible,
+            undo_reason=undo_reason,
+        ).to_dict()
 
         # Non-blocking enqueue -- the query does not wait on this (sec. 4).
         self._audit.record(
@@ -478,7 +517,7 @@ class ShadowSession:
                 "reversible": reversible,
                 "undo_reason": undo_reason,
                 "intent": decision.intent if decision is not None else None,
-                "decision": decision.to_dict() if decision is not None else None,
+                "decision": schema_decision,
                 "classification": classification.to_dict(),
             }
         )
@@ -498,6 +537,7 @@ class ShadowSession:
             "reversible": reversible,
             "undo_reason": undo_reason,
             "intent": decision.intent if decision is not None else None,
+            "decision": schema_decision,
         }
 
     async def approve_query(
@@ -509,11 +549,17 @@ class ShadowSession:
     ) -> dict[str, Any]:
         """Approve and execute a held write using an operator token."""
         if not self._operator_allowed(operator_token):
+            schema_decision = SchemaDecision.deny(
+                reason_code=SchemaReasonCode.OPERATOR_APPROVAL_DENIED,
+                explanation="Operator approval token is missing or invalid.",
+                repair_hint="Provide the configured operator token.",
+            ).to_dict()
             self._audit.record(
                 {
                     "event": "approval_denied",
                     "operator": operator,
                     "approval_id": approval_id,
+                    "decision": schema_decision,
                 }
             )
             return {
@@ -524,9 +570,17 @@ class ShadowSession:
                     "missing or invalid."
                 ),
                 "error": "operator approval token is missing or invalid",
+                "decision": schema_decision,
             }
         pending = self._pending_approvals.pop(approval_id, None)
         if pending is None:
+            schema_decision = SchemaDecision.deny(
+                reason_code=SchemaReasonCode.OPERATOR_APPROVAL_DENIED,
+                explanation="No pending approval exists for that id.",
+                repair_hint=(
+                    "List pending approvals and retry with a valid approval_id."
+                ),
+            ).to_dict()
             return {
                 "ok": False,
                 "approval_id": approval_id,
@@ -535,12 +589,16 @@ class ShadowSession:
                     "exists for that id."
                 ),
                 "error": "no such pending approval",
+                "decision": schema_decision,
             }
         self._audit.record(
             {
                 "event": "approval_granted",
                 "operator": operator,
                 **self._approval_summary(approval_id, pending),
+                "principal": principal_from_legacy(
+                    operator, kind=PrincipalKind.HUMAN.value
+                ).to_dict(),
             }
         )
         result = await self.run_query(
@@ -567,6 +625,11 @@ class ShadowSession:
     ) -> dict[str, Any]:
         """Undo a previously-recorded write by its action id. Itself audited."""
         if self._undo_store is None:
+            schema_decision = SchemaDecision.deny(
+                reason_code=SchemaReasonCode.NON_REVERSIBLE_WRITE,
+                explanation="Undo is not enabled for this session.",
+                repair_hint="Enable undo before attempting to revert writes.",
+            ).to_dict()
             return {
                 "ok": False,
                 "action_id": action_id,
@@ -574,6 +637,7 @@ class ShadowSession:
                     "Interdict could not revert this write: undo is not enabled."
                 ),
                 "error": "undo not enabled",
+                "decision": schema_decision,
             }
         operator_override = self._operator_allowed(operator_token)
         require_agent_match = (
@@ -588,17 +652,33 @@ class ShadowSession:
                 agent=agent,
                 require_agent_match=require_agent_match,
             )
-        self._audit.record({"event": "revert", "agent": agent, **result.to_dict()})
+        self._audit.record(
+            {
+                "event": "revert",
+                "agent": agent,
+                "principal": principal_from_legacy(agent).to_dict(),
+                **result.to_dict(),
+            }
+        )
         payload = result.to_dict()
         if result.ok:
             payload["summary"] = (
                 f"Interdict reverted {action_id}: restored "
                 f"{result.rows_restored} row(s)."
             )
+            payload["decision"] = SchemaDecision.allow(
+                reason_code=SchemaReasonCode.ALLOW,
+                explanation="Revert executed successfully.",
+            ).to_dict()
         else:
             payload["summary"] = (
                 f"Interdict could not revert {action_id}: {result.error}"
             )
+            payload["decision"] = SchemaDecision.deny(
+                reason_code=SchemaReasonCode.NON_REVERSIBLE_WRITE,
+                explanation=result.error or "Revert failed.",
+                repair_hint="Inspect the undo record and resolve conflicts manually.",
+            ).to_dict()
         return payload
 
     def audit_status(self) -> dict[str, Any]:

@@ -35,6 +35,17 @@ from engine.policy import (
     apply_blast_radius,
     evaluate,
 )
+from engine.schema import (
+    Decision as SchemaDecision,
+)
+from engine.schema import (
+    ReasonCode as SchemaReasonCode,
+)
+from engine.schema import (
+    decision_from_legacy_policy,
+    impact_from_legacy_simulation,
+    undo_from_execution,
+)
 from engine.security import client_db_error
 from engine.simulate import is_risky_write, simulate
 from engine.undo import UndoStore, execute_with_undo, revert
@@ -83,6 +94,7 @@ class Proposal:
     violations: tuple[dict, ...]
     stated_task: str | None
     actor: str | None
+    schema_decision: dict | None = None
 
     @property
     def is_write(self) -> bool:
@@ -110,6 +122,7 @@ class Proposal:
             "blast_timed_out": self.blast_timed_out,
             "violations": list(self.violations),
             "is_write": self.is_write,
+            "decision": self.schema_decision,
         }
 
 
@@ -128,6 +141,7 @@ class Result:
     reversible: bool | None = None
     undo_reason: str | None = None
     overridden: bool = False  # ran despite a BLOCK, on a deliberate human override
+    schema_decision: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -140,7 +154,38 @@ class Result:
             "reversible": self.reversible,
             "undo_reason": self.undo_reason,
             "overridden": self.overridden,
+            "decision": self.schema_decision,
         }
+
+
+def _executed_schema_decision(
+    proposal: Proposal,
+    *,
+    action_id: str | None,
+    reversible: bool | None,
+    undo_reason: str | None,
+    overridden: bool,
+) -> dict:
+    impact = (
+        impact_from_legacy_simulation(proposal.decision.simulation)
+        if proposal.decision is not None
+        else None
+    )
+    undo = undo_from_execution(
+        handle=action_id, reversible=reversible, reason=undo_reason
+    )
+    if overridden:
+        explanation = "Action executed after human override."
+    elif proposal.needs_confirmation:
+        explanation = "Action executed after interactive confirmation."
+    else:
+        explanation = "Action allowed and executed."
+    return SchemaDecision.allow(
+        reason_code=SchemaReasonCode.ALLOW,
+        explanation=explanation,
+        impact=impact,
+        undo=undo,
+    ).to_dict()
 
 
 class GuardedSession:
@@ -216,6 +261,7 @@ class GuardedSession:
                 violations=(),
                 stated_task=stated_task,
                 actor=actor,
+                schema_decision=decision_from_legacy_policy(None).to_dict(),
             )
 
         decision = evaluate(sql, classification, self._policy)
@@ -252,6 +298,14 @@ class GuardedSession:
             violations=tuple(v.to_dict() for v in decision.violations),
             stated_task=stated_task,
             actor=actor,
+            schema_decision=decision_from_legacy_policy(
+                decision,
+                approval_id=(
+                    "interactive-confirmation"
+                    if enforce and decision.requires_confirmation
+                    else None
+                ),
+            ).to_dict(),
         )
         self._record(
             {
@@ -305,9 +359,17 @@ class GuardedSession:
                     "violations": list(proposal.violations),
                 }
             )
-            return Result(executed=False, refused="blocked")
+            return Result(
+                executed=False,
+                refused="blocked",
+                schema_decision=proposal.schema_decision,
+            )
         if proposal.verdict == CONFIRM and not force and not can_override:
-            return Result(executed=False, refused="needs_confirmation")
+            return Result(
+                executed=False,
+                refused="needs_confirmation",
+                schema_decision=proposal.schema_decision,
+            )
 
         overridden = proposal.verdict == BLOCK and can_override
         if overridden:
@@ -369,6 +431,18 @@ class GuardedSession:
                             reversible=False,
                             undo_reason=undo_reason,
                             overridden=overridden,
+                            schema_decision=SchemaDecision.deny(
+                                reason_code=SchemaReasonCode.NON_REVERSIBLE_WRITE,
+                                explanation=(
+                                    "Write was not executed because it cannot be "
+                                    "recorded for safe undo."
+                                ),
+                                repair_hint=(
+                                    "Use a simple INSERT, UPDATE, or DELETE on a "
+                                    "primary-keyed table, or explicitly disable "
+                                    "undo.block_non_reversible for local evaluation."
+                                ),
+                            ).to_dict(),
                         )
                 else:
                     # prepare()+fetch() runs the statement once and exposes both
@@ -407,6 +481,13 @@ class GuardedSession:
             reversible=reversible,
             undo_reason=undo_reason,
             overridden=overridden,
+            schema_decision=_executed_schema_decision(
+                proposal,
+                action_id=action_id,
+                reversible=reversible,
+                undo_reason=undo_reason,
+                overridden=overridden,
+            ),
         )
 
     async def revert(self, action_id: str, *, actor: str | None = None):
