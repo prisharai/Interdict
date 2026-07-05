@@ -1,411 +1,369 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Interdict — the runtime layer between AI agents and Postgres</title>
+    <title>Interdict — the safety layer between AI agents and your database</title>
     <meta
       name="description"
-      content="Interdict sits between AI agents and Postgres: it previews blast radius, blocks dangerous writes, requires out-of-band approval, and records undo."
+      content="Interdict measures the blast radius of every risky agent write before it runs, holds it for human approval, and makes every allowed write undoable with one command."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=Spectral:ital,wght@0,300;0,400;0,500;1,400&family=Spline+Sans+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <!-- ─── Intro gate ───────────────────────────────────── -->
-    <section id="gate" class="gate" aria-labelledby="gate-title">
-      <!-- Hand-built ink-wash scene -->
-      <svg class="scene" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-        <defs>
-          <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" class="sky-top" />
-            <stop offset="60%" class="sky-mid" />
-            <stop offset="100%" class="sky-bot" />
-          </linearGradient>
-          <radialGradient id="moon" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" class="moon-core" />
-            <stop offset="55%" class="moon-core" />
-            <stop offset="100%" class="moon-edge" />
-          </radialGradient>
-          <radialGradient id="halo" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" class="halo-in" />
-            <stop offset="100%" class="halo-out" />
-          </radialGradient>
-          <linearGradient id="ridge1" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" class="ridge1-a" /><stop offset="100%" class="ridge1-b" />
-          </linearGradient>
-          <linearGradient id="ridge2" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" class="ridge2-a" /><stop offset="100%" class="ridge2-b" />
-          </linearGradient>
-          <linearGradient id="ridge3" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" class="ridge3-a" /><stop offset="100%" class="ridge3-b" />
-          </linearGradient>
-          <filter id="soft"><feGaussianBlur stdDeviation="7" /></filter>
-          <filter id="mistblur"><feGaussianBlur stdDeviation="22" /></filter>
-        </defs>
-
-        <rect x="0" y="0" width="1200" height="800" fill="url(#sky)" />
-        <circle cx="930" cy="190" r="190" fill="url(#halo)" />
-        <circle cx="930" cy="190" r="92" fill="url(#moon)" />
-
-        <!-- far ridge -->
-        <path class="ridge" fill="url(#ridge1)" filter="url(#soft)"
-          d="M0 470 C 160 420 300 470 430 415 C 560 360 700 430 840 380 C 980 330 1110 400 1200 380 L1200 800 L0 800 Z" />
-        <!-- mid ridge -->
-        <path class="ridge" fill="url(#ridge2)" filter="url(#soft)"
-          d="M0 575 C 180 520 330 575 500 510 C 650 452 780 545 940 495 C 1080 452 1150 520 1200 505 L1200 800 L0 800 Z" />
-        <!-- near ridge -->
-        <path class="ridge" fill="url(#ridge3)"
-          d="M0 700 C 220 650 380 700 560 645 C 740 592 880 678 1060 632 C 1140 612 1180 648 1200 642 L1200 800 L0 800 Z" />
-
-        <!-- drifting mist -->
-        <g class="mist">
-          <ellipse class="mist-band m1" cx="400" cy="500" rx="520" ry="34" filter="url(#mistblur)" />
-          <ellipse class="mist-band m2" cx="800" cy="580" rx="620" ry="40" filter="url(#mistblur)" />
-          <ellipse class="mist-band m3" cx="300" cy="650" rx="560" ry="46" filter="url(#mistblur)" />
-        </g>
-
-        <!-- ink blossom branch, lower-left like the reference -->
-        <g class="branch" stroke-linecap="round" fill="none">
-          <path class="limb" d="M20 800 C 90 690 70 612 150 566 C 205 534 188 486 250 470" />
-          <path class="twig" d="M150 566 C 120 540 92 540 64 556" />
-          <path class="twig" d="M196 520 C 230 504 250 470 244 432" />
-          <path class="twig" d="M250 470 C 286 470 312 452 322 418" />
-        </g>
-        <g class="blossoms">
-          <circle cx="64" cy="552" r="6" /><circle cx="52" cy="540" r="5" /><circle cx="74" cy="540" r="5" />
-          <circle cx="244" cy="432" r="6" /><circle cx="232" cy="420" r="5" /><circle cx="256" cy="420" r="5" />
-          <circle cx="322" cy="418" r="6" /><circle cx="310" cy="406" r="5" /><circle cx="334" cy="406" r="5" />
-          <circle cx="200" cy="516" r="5" /><circle cx="250" cy="470" r="5" />
-        </g>
-      </svg>
-
-      <!-- falling petals -->
-      <div class="petals" aria-hidden="true">
-        <span style="--x:12vw;--d:0s;--dur:11s;--s:.9"></span>
-        <span style="--x:24vw;--d:3s;--dur:14s;--s:.7"></span>
-        <span style="--x:38vw;--d:6s;--dur:12s;--s:1.1"></span>
-        <span style="--x:51vw;--d:1.5s;--dur:15s;--s:.8"></span>
-        <span style="--x:63vw;--d:4.5s;--dur:13s;--s:1"></span>
-        <span style="--x:74vw;--d:8s;--dur:16s;--s:.6"></span>
-        <span style="--x:86vw;--d:2.5s;--dur:12s;--s:.95"></span>
-        <span style="--x:93vw;--d:5.5s;--dur:14s;--s:.75"></span>
+    <!-- ───────────────────────── header ───────────────────────── -->
+    <header class="site-header" id="siteHeader">
+      <a class="brand" href="#top" aria-label="Interdict home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Interdict</span>
+      </a>
+      <div class="header-actions">
+        <a
+          class="header-link"
+          href="https://github.com/prisharai/Interdict"
+          target="_blank"
+          rel="noreferrer"
+          >GitHub</a
+        >
+        <a class="pill-cta" href="#waitlist">Join the waitlist</a>
       </div>
+    </header>
 
-      <div class="gate-inner">
-        <p class="gate-eyebrow">runtime safety · postgres</p>
-        <h1 id="gate-title" class="gate-title">Interdict</h1>
-        <p class="gate-line">A quiet layer between a careless query and an irreversible mistake.</p>
-        <button class="enter-button" type="button" aria-label="Enter the site">
-          <span class="enter-seal" aria-hidden="true">印</span>
-          <span class="enter-label">Enter</span>
-        </button>
-      </div>
-      <div class="gate-foot" aria-hidden="true">ai agent guardrail&nbsp;·&nbsp;out-of-band approval&nbsp;·&nbsp;instant undo</div>
-    </section>
-
-    <!-- ─── Site ─────────────────────────────────────────── -->
-    <div id="site" class="site" aria-hidden="true">
-      <header class="site-header">
-        <a class="brand" href="#top">Interdict</a>
-        <nav class="nav" aria-label="Primary">
-          <a href="#quickstart">Start</a>
-          <a href="#demo">Flows</a>
-          <a href="#problem">Why</a>
-        </nav>
-        <div class="header-actions">
-          <a class="header-link" href="https://github.com/prisharai/Interdict" target="_blank" rel="noreferrer">GitHub</a>
-          <button class="theme-toggle" type="button" role="switch" aria-checked="true" aria-label="Toggle dark and light mode">
-            <span class="theme-track">
-              <span class="theme-opt theme-opt-dark" aria-hidden="true">夜 Night</span>
-              <span class="theme-opt theme-opt-light" aria-hidden="true">昼 Day</span>
-              <span class="theme-knob" aria-hidden="true"></span>
-            </span>
-          </button>
+    <main id="top">
+      <!-- ───────────────────────── hero ───────────────────────── -->
+      <section class="hero" id="hero">
+        <div class="hero-inner">
+          <h1 class="hero-title" aria-label="The safety layer between AI agents and your database">
+            <span class="morph-line is-active"
+              >The safety layer between<br />AI&nbsp;agents and your database</span
+            >
+            <span class="morph-line"
+              >Measure the blast radius.<br />Undo the damage.</span
+            >
+            <span class="morph-line"
+              >Give agents the keys —<br />and keep the undo button.</span
+            >
+          </h1>
+          <p class="hero-sub reveal">
+            Interdict sits between your agent and Postgres. It measures how many
+            rows a risky write would really touch <em>before</em> it runs, holds
+            it for human approval, and makes every allowed write reversible with
+            one command.
+          </p>
+          <div class="hero-cta reveal">
+            <a class="pill-cta big" href="#waitlist">Join the waitlist</a>
+            <button class="ghost-cta copy-install" type="button" data-copy="pip install interdict-db">
+              <code>pip install interdict-db</code>
+              <span class="copy-hint">copy</span>
+            </button>
+          </div>
         </div>
-      </header>
 
-      <main id="top">
-        <!-- Hero -->
-        <section class="hero section">
-          <svg class="hero-wash" viewBox="0 0 1200 800" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-            <use href="#halo" />
-          </svg>
-          <div class="hero-copy">
-            <p class="eyebrow reveal" style="--i:0">agent-native database safety</p>
-            <h2 class="hero-title reveal" style="--i:1">Run Interdict locally in four steps.</h2>
-            <p class="lede reveal" style="--i:2">
-              Start the demo database, launch the MCP server, connect Claude Code,
-              then test block, hold, approve, execute, and undo. Interdict sits
-              between AI agents and Postgres so risky writes are measured before
-              they touch data.
-            </p>
-            <div class="action-row reveal" style="--i:3">
-              <a class="button primary" href="#quickstart">Run it locally</a>
-              <a class="button ghost" href="https://github.com/prisharai/Interdict" target="_blank" rel="noreferrer">Read the source</a>
+        <div class="hero-stage" aria-hidden="false">
+          <div class="hero-glow" aria-hidden="true"></div>
+          <div class="terminal hero-terminal" role="img" aria-label="Terminal showing Interdict blocking, holding, approving and undoing an agent write">
+            <div class="terminal-bar">
+              <span class="dots"><i></i><i></i><i></i></span>
+              <span class="terminal-title">agent → interdict → postgres</span>
             </div>
-            <ul class="hero-facts reveal" style="--i:4">
-              <li><b>blocks</b> unscoped destructive writes before Postgres</li>
-              <li><b>holds</b> risky writes for out-of-band terminal approval</li>
-              <li><b>undoes</b> approved writes with an audit trail</li>
+            <pre><code><span class="t-agent">agent</span>  DELETE FROM customers;
+<span class="t-bad">✕ blocked</span> · WRITE_WITHOUT_WHERE — this would erase every row
+         <span class="t-dim">fix: add a WHERE clause that scopes the delete</span>
+
+<span class="t-agent">agent</span>  DELETE FROM customers WHERE last_order &lt; '2019-01-01';
+<span class="t-warn">⏸ held</span>    · blast radius <span class="t-strong">2,300,000 rows</span> · approval_id 8f41…
+
+<span class="t-you">you</span>    $ interdict approve 8f41
+<span class="t-good">✓ approved</span> · executed · undo_id 3811adb4
+
+<span class="t-you">you</span>    revert 3811adb4
+<span class="t-good">✓ reverted</span> — 2,300,000 rows restored</code></pre>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─────────────────── statement · why now ─────────────────── -->
+      <section class="statement">
+        <h2 class="giant reveal">
+          AI agents are writing to production databases, right&nbsp;now.
+        </h2>
+      </section>
+
+      <!-- ─────────────────── incident collage ─────────────────── -->
+      <section class="collage" id="problem">
+        <div class="collage-field" aria-hidden="true">
+          <div class="mini-card c1" data-speed="0.05">
+            <div class="mini-bar"><span class="dots"><i></i><i></i><i></i></span></div>
+            <pre><code>DELETE FROM clients;</code></pre>
+            <span class="mini-tag">the missing WHERE</span>
+          </div>
+          <div class="mini-card c2" data-speed="-0.04">
+            <div class="mini-bar"><span class="dots"><i></i><i></i><i></i></span></div>
+            <pre><code>UPDATE users SET plan = 'free';</code></pre>
+            <span class="mini-tag">meant for one row</span>
+          </div>
+          <div class="mini-card c3" data-speed="0.08">
+            <div class="mini-bar"><span class="dots"><i></i><i></i><i></i></span></div>
+            <pre><code>DROP TABLE orders CASCADE;</code></pre>
+            <span class="mini-tag">wrong environment</span>
+          </div>
+          <div class="mini-card c4" data-speed="-0.06">
+            <div class="mini-bar"><span class="dots"><i></i><i></i><i></i></span></div>
+            <pre><code>TRUNCATE payments;</code></pre>
+            <span class="mini-tag">the agent was “cleaning up”</span>
+          </div>
+          <div class="mini-card c5" data-speed="0.04">
+            <div class="mini-bar"><span class="dots"><i></i><i></i><i></i></span></div>
+            <pre><code>DELETE FROM users WHERE 1=1; --</code></pre>
+            <span class="mini-tag">sneaky second statement</span>
+          </div>
+          <div class="mini-card c6" data-speed="-0.07">
+            <div class="mini-bar"><span class="dots"><i></i><i></i><i></i></span></div>
+            <pre><code>UPDATE inventory SET qty = 0;</code></pre>
+            <span class="mini-tag">staging — they thought</span>
+          </div>
+        </div>
+        <h2 class="giant reveal">
+          One statement can erase<br />years of work
+        </h2>
+        <p class="statement-sub reveal">
+          Agents type fast. Postgres does exactly what it's told. Database
+          permissions answer <em>who may touch a table</em> — never
+          <em>how much this statement will change</em>.
+        </p>
+      </section>
+
+      <!-- ─────────────────── statement · undo ─────────────────── -->
+      <section class="statement cursor-field-wrap">
+        <div class="cursor-field" aria-hidden="true">
+          <span class="cursor-pill" style="--c: #7a4bf0; --x: 16%; --y: 28%; --d: 0s">Claude</span>
+          <span class="cursor-pill" style="--c: #0fae7c; --x: 76%; --y: 24%; --d: 1.2s">Codex</span>
+          <span class="cursor-pill" style="--c: #e5468c; --x: 24%; --y: 68%; --d: 2.1s">Cursor</span>
+          <span class="cursor-pill" style="--c: #2f7df6; --x: 70%; --y: 66%; --d: 0.7s">Gemini</span>
+          <span class="cursor-pill" style="--c: #e8a020; --x: 46%; --y: 16%; --d: 1.7s">Devin</span>
+          <span class="cursor-pill" style="--c: #0fa8a8; --x: 55%; --y: 80%; --d: 2.6s">Windsurf</span>
+        </div>
+        <h2 class="giant reveal">An undo button for your database, finally</h2>
+        <p class="statement-sub reveal">
+          Not just another rule engine. Rules catch the obvious. Interdict
+          measures the <em>actual</em> damage a statement would do — and can
+          take it back after the fact.
+        </p>
+      </section>
+
+      <!-- ─────────────── sticky lifecycle diagram ─────────────── -->
+      <section class="lifecycle" id="how">
+        <div class="lifecycle-track">
+          <div class="lifecycle-scene" id="lifecycleScene">
+            <div class="lifecycle-heads">
+              <h2 class="giant life-head head-a is-active">Measure, hold, approve, undo.</h2>
+              <h2 class="giant life-head head-b">Without ever leaving the chat.</h2>
+            </div>
+            <div class="life-diagram">
+              <span class="life-line" aria-hidden="true"><span class="life-line-fill"></span></span>
+
+              <div class="life-step s1">
+                <span class="life-node"></span>
+                <div class="life-card left">
+                  <span class="life-badge bad">blocked</span>
+                  <code>DELETE FROM accounts;</code>
+                  <small>no WHERE — would hit every row. fix suggested, agent retries.</small>
+                </div>
+              </div>
+
+              <div class="life-step s2">
+                <span class="life-node"></span>
+                <div class="life-card right">
+                  <span class="life-badge warn">held for approval</span>
+                  <code>DELETE … WHERE last_order &lt; '2019'</code>
+                  <small>blast radius <b class="blast-count" data-target="2300000">0</b> rows — measured live, not guessed</small>
+                </div>
+              </div>
+
+              <div class="life-step s3">
+                <span class="life-node"></span>
+                <div class="life-card left">
+                  <span class="life-badge op">operator</span>
+                  <code>$ interdict approve 8f41</code>
+                  <small>approved from your terminal — the token never enters the chat</small>
+                </div>
+              </div>
+
+              <div class="life-step s4">
+                <span class="life-node"></span>
+                <div class="life-card right">
+                  <span class="life-badge good">executed</span>
+                  <code>DELETE 2,300,000</code>
+                  <small>before-images recorded · undo_id 3811adb4</small>
+                </div>
+              </div>
+
+              <div class="life-step s5">
+                <span class="life-node"></span>
+                <div class="life-card left">
+                  <span class="life-badge good">reverted</span>
+                  <code>revert 3811adb4</code>
+                  <small>2,300,000 rows restored — one command, fully audited</small>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─────────────────────── stats ─────────────────────── -->
+      <section class="stats">
+        <h2 class="giant reveal">Numbers, not promises</h2>
+        <div class="stat-row reveal">
+          <div class="stat">
+            <b>2.6µs</b>
+            <span>added per statement<br />(warm hot path)</span>
+          </div>
+          <div class="stat">
+            <b>≈0ms</b>
+            <span>end-to-end overhead<br />p50 &amp; p99</span>
+          </div>
+          <div class="stat">
+            <b>0%</b>
+            <span>dangerous statements missed<br />(red corpus)</span>
+          </div>
+          <div class="stat">
+            <b>321</b>
+            <span>automated tests<br />in the suite</span>
+          </div>
+        </div>
+        <p class="stat-note reveal">
+          Deterministic checks run in memory in microseconds. Simulation is
+          gated to risky writes and time-boxed. The safe path never waits on an
+          LLM.
+        </p>
+      </section>
+
+      <!-- ─────────────────── dark cinematic band ─────────────────── -->
+      <section class="dark-band" data-dark>
+        <div class="dark-inner">
+          <h2 class="giant reveal">
+            Give your agents the database.<br />Keep the undo button.
+          </h2>
+          <p class="dark-sub reveal">
+            Open source. Runs locally as an MCP server your agent connects to
+            today — Claude Code, Codex, Cursor, or anything that speaks MCP.
+          </p>
+          <div class="dark-cta reveal">
+            <button class="ghost-cta on-dark copy-install" type="button" data-copy="pip install interdict-db">
+              <code>pip install interdict-db</code>
+              <span class="copy-hint">copy</span>
+            </button>
+            <a
+              class="pill-cta inverse"
+              href="https://github.com/prisharai/Interdict"
+              target="_blank"
+              rel="noreferrer"
+              >Read the source</a
+            >
+          </div>
+        </div>
+      </section>
+
+      <!-- ─────────────────────── pricing ─────────────────────── -->
+      <section class="pricing" id="pricing">
+        <h2 class="giant reveal">Free for every developer.<br />Paid where teams need it.</h2>
+        <div class="price-grid reveal">
+          <article class="price-card">
+            <h3>Open source</h3>
+            <p class="price"><b>$0</b><span> forever</span></p>
+            <ul>
+              <li>Full safety engine — nothing crippled</li>
+              <li>Blast-radius simulation on risky writes</li>
+              <li>One-command undo with audit trail</li>
+              <li>Deterministic YAML policy engine</li>
+              <li>Terminal approvals &amp; local audit log</li>
             </ul>
-          </div>
+            <a
+              class="price-cta ghost"
+              href="https://github.com/prisharai/Interdict"
+              target="_blank"
+              rel="noreferrer"
+              >Get started on GitHub</a
+            >
+          </article>
 
-          <aside class="agent-layer-visual reveal scroll-lag" style="--i:3; --lag: 0.08" aria-label="Interdict sits between AI agents and Postgres">
-            <div class="layer-node node-agent">
-              <span>AI agent</span>
-              <strong>Claude / Codex</strong>
-            </div>
-            <div class="layer-flow" aria-hidden="true">
-              <span></span><span></span><span></span>
-            </div>
-            <div class="layer-core">
-              <span class="core-ring"></span>
-              <span class="core-ring"></span>
-              <span class="core-ring"></span>
-              <strong>Interdict</strong>
-              <em>parse · simulate · approve · undo</em>
-            </div>
-            <div class="layer-flow reverse" aria-hidden="true">
-              <span></span><span></span><span></span>
-            </div>
-            <div class="layer-node node-db">
-              <span>Postgres</span>
-              <strong>protected data</strong>
-            </div>
-            <div class="layer-proof">
-              <b>held</b>
-              <span>DELETE would affect 2,300,000 rows</span>
-            </div>
-          </aside>
+          <article class="price-card featured">
+            <span class="feat-tag">waitlist open</span>
+            <h3>Team Cloud</h3>
+            <p class="price"><b>$149</b><span> /mo per database · early access</span></p>
+            <ul>
+              <li>Approve held writes from Slack — one tap</li>
+              <li>Shared, tamper-evident audit trail</li>
+              <li>Dashboard across every agent and repo</li>
+              <li>Team roles &amp; approval policies</li>
+              <li>Everything in Open source</li>
+            </ul>
+            <a class="price-cta solid" href="#waitlist">Join the waitlist</a>
+          </article>
 
-          <aside class="console hero-console reveal scroll-lag" style="--i:4; --lag: 0.04" aria-label="Terminal example">
-            <div class="console-bar">
-              <span class="console-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-              <span class="console-title">agent → interdict → postgres</span>
-            </div>
-            <pre><code><span class="prompt">agent.run_query</span> UPDATE users SET plan = 'free';
+          <article class="price-card">
+            <h3>Enterprise</h3>
+            <p class="price"><b>Custom</b></p>
+            <ul>
+              <li>Self-hosted control plane</li>
+              <li>SSO / SAML &amp; fleet-of-agents identity</li>
+              <li>Retention policies &amp; compliance exports</li>
+              <li>Support SLA &amp; onboarding</li>
+              <li>Everything in Team Cloud</li>
+            </ul>
+            <a class="price-cta ghost" href="mailto:pr482@cornell.edu?subject=Interdict%20Enterprise">Talk to us</a>
+          </article>
+        </div>
+      </section>
 
-<span class="bad">✕ blocked — WRITE_WITHOUT_WHERE</span>
-This UPDATE has no WHERE clause; it would rewrite
-every row in <span class="lav">users</span>.
+      <!-- ─────────────────────── waitlist ─────────────────────── -->
+      <section class="waitlist" id="waitlist">
+        <h2 class="giant reveal">Be first in line</h2>
+        <p class="statement-sub reveal">
+          Team Cloud is rolling out to a small group of design partners. Leave
+          your email and we'll onboard you personally.
+        </p>
+        <form class="waitlist-form reveal" id="waitlistForm" novalidate>
+          <input
+            type="email"
+            name="email"
+            id="waitlistEmail"
+            placeholder="you@company.com"
+            autocomplete="email"
+            required
+            aria-label="Work email"
+          />
+          <button class="pill-cta big" type="submit">Join the waitlist</button>
+        </form>
+        <p class="waitlist-note" id="waitlistNote" role="status" aria-live="polite"></p>
+      </section>
+    </main>
 
-<span class="dim">suggested_fix</span>  add a WHERE that scopes the rows
-<span class="dim">retryable</span>      true</code></pre>
-          </aside>
-        </section>
-
-        <!-- Problem -->
-        <section id="problem" class="section split">
-          <div class="split-head">
-            <p class="eyebrow">why it exists</p>
-            <h2>Database permissions can grant access. They can't measure damage.</h2>
-          </div>
-          <div class="body-copy">
-            <p>
-              A Postgres role can say whether someone may touch the
-              <span class="lav">orders</span> table. It cannot say whether
-              <em>this exact statement</em> changes one row or two million — or
-              whether the change can be reversed without restoring a full backup
-              and throwing away everyone else's work.
-            </p>
-            <p>
-              That missing layer is where real accidents live: the unscoped
-              <span class="lav">UPDATE</span>, the agent that misreads its own
-              task, the <span class="lav">DELETE</span> that was meant for staging.
-              Interdict is the agent-native runtime layer for exactly that gap.
-            </p>
-          </div>
-        </section>
-
-        <!-- Demo -->
-        <section id="demo" class="section">
-          <div class="section-head">
-            <p class="eyebrow">see it work</p>
-            <h2>Three things you'll watch it do.</h2>
-            <p class="section-sub">Block a dangerous write, hold a risky one for human approval, and undo a committed change.</p>
-          </div>
-          <div class="moment-grid">
-            <article class="console moment-card">
-              <div class="console-bar">
-                <span class="console-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span class="console-title">1 · it blocks, with a fix</span>
-              </div>
-              <pre><code><span class="prompt">agent.run_query</span> UPDATE users SET plan='free';
-
-<span class="bad">blocked: true</span>
-reason: WRITE_WITHOUT_WHERE
-plain: this rewrites every row
-fix: add WHERE id = … or a scope</code></pre>
-            </article>
-            <article class="console moment-card featured">
-              <div class="console-bar">
-                <span class="console-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span class="console-title">2 · it holds for human approval</span>
-              </div>
-              <pre><code><span class="prompt">agent.run_query</span> DELETE FROM clients
-          WHERE active = true;
-
-<span class="warn">held for approval</span>
-blast radius:  <span class="good">2,300,000 rows</span>  (precise)
-approval_id:   8f41...
-expires:       30 minutes
-
-human runs:    interdict approve 8f41...
-agent calls:   run_approved_query(8f41...)</code></pre>
-            </article>
-            <article class="console moment-card">
-              <div class="console-bar">
-                <span class="console-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                <span class="console-title">3 · it puts things back</span>
-              </div>
-              <pre><code><span class="prompt">agent.run_query</span> UPDATE accounts
-          SET balance=0 WHERE id=1;
-<span class="good">✓ UPDATE 1</span>   undo_id 3811adb4
-
-<span class="prompt">operator</span> revert_write(3811adb4)
-<span class="good">✓ reverted — 1 row restored</span></code></pre>
-            </article>
-          </div>
-        </section>
-
-        <!-- Method -->
-        <section id="method" class="section">
-          <div class="section-head">
-            <p class="eyebrow">how it works</p>
-            <h2>Four steps between a query and your data.</h2>
-            <p class="section-sub">The whole decision is deterministic and runs in memory, so the safe path stays fast.</p>
-          </div>
-          <ol class="steps">
-            <li class="step">
-              <span class="step-number">一</span>
-              <h3>Parse</h3>
-              <p>A real Postgres parser, not regex — so comments, casing, aliases, and stray semicolons are read structurally, not guessed.</p>
-            </li>
-            <li class="step">
-              <span class="step-number">二</span>
-              <h3>Classify</h3>
-              <p>Reads, writes, DDL, catalog access, risky functions, and dangerously broad scopes are each identified by shape.</p>
-            </li>
-            <li class="step">
-              <span class="step-number">三</span>
-              <h3>Simulate</h3>
-              <p>Risky writes run inside a time-boxed throwaway transaction that is rolled back, returning the real affected-row count.</p>
-            </li>
-            <li class="step">
-              <span class="step-number">四</span>
-              <h3>Decide</h3>
-              <p>Allow, hold for out-of-band approval, or block with a fix — and record an undo path whenever the write can be safely reversed.</p>
-            </li>
-          </ol>
-
-          <div class="feature-band">
-            <article class="feature"><h3>Blast-radius preview</h3><p>Impact is measured against the live database, not inferred from the SQL text.</p></article>
-            <article class="feature"><h3>Instant undo</h3><p>Reverse one bad action by id — no full restore, no collateral data loss.</p></article>
-            <article class="feature"><h3>Human approval boundary</h3><p>Held writes are approved from the operator's terminal; tokens never pass through chat.</p></article>
-            <article class="feature"><h3>Negligible overhead</h3><p>Deterministic checks run in microseconds; the benchmark reports ~0&nbsp;ms end to end.</p></article>
-          </div>
-        </section>
-
-        <!-- Quickstart -->
-        <section id="quickstart" class="section">
-          <div class="section-head">
-            <p class="eyebrow">start here</p>
-            <h2>Exact steps to run Interdict locally right now.</h2>
-            <p class="section-sub">Use the bundled Pagila database first. Then replace the DSN with your own Postgres connection string.</p>
-          </div>
-          <div class="runbook">
-            <div class="runbook-tabs" role="tablist" aria-label="Setup steps">
-              <button class="run-tab is-active" type="button" data-step="0">database</button>
-              <button class="run-tab" type="button" data-step="1">server</button>
-              <button class="run-tab" type="button" data-step="2">connect</button>
-              <button class="run-tab" type="button" data-step="3">test</button>
-            </div>
-            <div class="runbook-panel">
-              <div class="run-copy">
-                <p class="run-label" id="run-step-label">step 1</p>
-                <h3 id="run-step-title">Start the dev database</h3>
-                <p id="run-step-copy">Bring up the bundled Pagila Postgres fixture.</p>
-                <div class="run-expected">
-                  <span>what good looks like</span>
-                  <p id="run-step-expected">Postgres is running on localhost:5433 with the pagila database loaded.</p>
-                </div>
-                <p class="run-note" id="run-step-note">If the database is already up, this command is a no-op.</p>
-              </div>
-              <div class="console run-command">
-                <div class="console-bar">
-                  <span class="console-dots" aria-hidden="true"><i></i><i></i><i></i></span>
-                  <button class="copy-command" type="button">copy</button>
-                </div>
-                <pre><code id="run-step-code">docker compose up -d</code></pre>
-              </div>
-            </div>
-          </div>
-          <div class="manual-grid">
-            <article class="manual-card">
-              <span class="tag">active</span>
-              <h3>Verify once per chat.</h3>
-              <p>After connecting Claude Code, ask it to call <code>interdict_status</code>. You should see the guarded DSN.</p>
-            </article>
-            <article class="manual-card">
-              <span class="tag">approval</span>
-              <h3>Approve outside chat.</h3>
-              <p>Run <code>interdict approve &lt;id&gt;</code> in your terminal with <code>AGENT_OPERATOR_TOKEN</code> set in that shell.</p>
-            </article>
-            <article class="manual-card">
-              <span class="tag">undo</span>
-              <h3>Reverse by id.</h3>
-              <p>Successful writes return an <code>undo_id</code>. Ask Claude Code to call <code>revert_write</code> with that id.</p>
-            </article>
-          </div>
-
-          <div class="prompt-lab">
-            <div class="prompt-lab-head">
-              <p class="eyebrow">test flow</p>
-              <h3>Four prompts prove the loop.</h3>
-              <p>Use the bundled database before pointing Interdict at production.</p>
-            </div>
-            <div class="prompt-grid">
-              <article class="prompt-card">
-                <span class="tag">block</span>
-                <p>delete all customers</p>
-                <small>Expected: blocked because the write is unscoped.</small>
-              </article>
-              <article class="prompt-card">
-                <span class="tag">hold</span>
-                <p>delete the first 100 customers</p>
-                <small>Expected: held with an approval_id and clear next steps.</small>
-              </article>
-              <article class="prompt-card">
-                <span class="tag">approve</span>
-                <p>After terminal approval, call run_approved_query with the approval_id.</p>
-                <small>Expected: the write runs and returns an undo_id.</small>
-              </article>
-              <article class="prompt-card">
-                <span class="tag">undo</span>
-                <p>undo the delete</p>
-                <small>Expected: Claude Code calls revert_write and restores the rows.</small>
-              </article>
-            </div>
-          </div>
-        </section>
-
-      </main>
-
-      <footer class="footer">
-        <span class="footer-mark">Interdict <em>印</em></span>
-        <span class="footer-line">how much will this change — and can I undo it?</span>
-        <span class="footer-links">
-          <a href="https://github.com/prisharai/Interdict" target="_blank" rel="noreferrer">GitHub</a>
-          <a href="../README.md">Docs</a>
-        </span>
-      </footer>
-    </div>
+    <!-- ─────────────────────── footer ─────────────────────── -->
+    <footer class="footer" data-dark>
+      <div class="works-with" aria-label="Works with">
+        <span>works with</span>
+        <b>Claude Code</b><b>Codex</b><b>Cursor</b><b>Windsurf</b><b>any MCP client</b>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/prisharai/Interdict" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://pypi.org/project/interdict-db/" target="_blank" rel="noreferrer">PyPI</a>
+        <a href="https://github.com/prisharai/Interdict#readme" target="_blank" rel="noreferrer">Docs</a>
+        <a href="mailto:pr482@cornell.edu">Contact</a>
+      </div>
+      <div class="footer-legal">
+        <span>© 2026 Interdict. All rights reserved.</span>
+        <span class="footer-tag">how much will this change — and can I undo it?</span>
+      </div>
+      <div class="footer-wordmark" aria-hidden="true">Interdict</div>
+    </footer>
 
     <script src="script.js"></script>
   </body>

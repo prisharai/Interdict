@@ -1,177 +1,220 @@
-const gate = document.querySelector("#gate");
-const site = document.querySelector("#site");
-const enterButton = document.querySelector(".enter-button");
-const themeToggle = document.querySelector(".theme-toggle");
-const runTabs = document.querySelectorAll(".run-tab");
-const runStepLabel = document.querySelector("#run-step-label");
-const runStepTitle = document.querySelector("#run-step-title");
-const runStepCopy = document.querySelector("#run-step-copy");
-const runStepCode = document.querySelector("#run-step-code");
-const runStepExpected = document.querySelector("#run-step-expected");
-const runStepNote = document.querySelector("#run-step-note");
-const copyCommand = document.querySelector(".copy-command");
-const root = document.documentElement;
-const lagItems = Array.from(document.querySelectorAll(".scroll-lag"));
+/* Interdict landing — interactions
+   Blur-in reveals, hero headline morph, sticky lifecycle scroll scene,
+   blast-radius counter, header inversion over dark sections, copy
+   buttons, and the waitlist form. No dependencies. */
 
-const runSteps = [
-  {
-    label: "Step 1",
-    title: "Start the dev database",
-    copy:
-      "Bring up the bundled Pagila Postgres fixture. The first run seeds about 5M rows; later starts are effectively instant.",
-    code:
-      "docker compose up -d",
-    expected:
-      "Postgres is running on localhost:5433 with the pagila database loaded.",
-    note:
-      "If the database is already up, this command is a no-op.",
-  },
-  {
-    label: "Step 2",
-    title: "Launch the Interdict MCP server",
-    copy:
-      "Start Interdict against the demo database and leave it running. Blocking while it waits for MCP connections is normal.",
-    code:
-      "AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \\\nAGENT_OPERATOR_TOKEN=\"test-operator-token-with-at-least-32-chars-minimum\" \\\nuv run interdict",
-    expected:
-      "You see interdict: ready -- guarding postgresql://[REDACTED]@localhost:5433/pagila, followed by the Claude Code command to paste.",
-    note:
-      "For your own database, replace AGENT_DB_DSN with your Postgres connection string.",
-  },
-  {
-    label: "Step 3",
-    title: "Connect Claude Code",
-    copy:
-      "Open Claude Code in another terminal and register Interdict as an MCP server. Use the command printed by the server, or this local repo command.",
-    code:
-      "claude mcp add interdict \\\n  --env AGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \\\n  --env AGENT_OPERATOR_TOKEN=\"test-operator-token-with-at-least-32-chars-minimum\" \\\n  -- uv run --directory /Users/prishar/agent-db-safety interdict",
-    expected:
-      "Claude Code has Interdict tools available. Ask it to call interdict_status and it should report the guarded DSN.",
-    note:
-      "The operator token belongs in your shell environment, never in chat.",
-  },
-  {
-    label: "Step 4",
-    title: "Test block, hold, approve, undo",
-    copy:
-      "Use normal Claude Code prompts. Interdict should block broad writes, hold risky scoped writes, execute approved writes, and return an undo id.",
-    code:
-      "Ask Claude Code: delete all customers\n\nAsk Claude Code: delete the first 100 customers\n\n# In YOUR terminal, paste the approval_id:\nAGENT_DB_DSN=postgresql://postgres:postgres@localhost:5433/pagila \\\nAGENT_OPERATOR_TOKEN=\"test-operator-token-with-at-least-32-chars-minimum\" \\\nuv run --directory /Users/prishar/agent-db-safety interdict approve <approval_id>\n\n# Back in Claude Code:\ncall run_approved_query(approval_id=\"<approval_id>\")\n\n# Then:\nundo the delete",
-    expected:
-      "The no-WHERE delete is blocked. The scoped delete is held with an approval_id. After terminal approval, Claude executes it and gets an undo_id.",
-    note:
-      "Full audit trail is written to ~/.interdict/audit.jsonl.",
-  },
-];
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-const storedTheme = window.localStorage.getItem("interdict-theme");
-if (storedTheme) {
-  root.dataset.theme = storedTheme;
-}
+/* ── 1. Reveal on scroll (blur + rise, Opacity-style) ─────────── */
 
-function openSite() {
-  gate.classList.add("is-open");
-  site.classList.add("is-visible");
-  site.setAttribute("aria-hidden", "false");
-
-  if (!window.location.hash || window.location.hash === "#gate") {
-    window.history.replaceState(null, "", "#quickstart");
-  }
-}
-
-const quickstart = document.querySelector("#quickstart");
-const problem = document.querySelector("#problem");
-if (quickstart && problem) {
-  problem.before(quickstart);
-}
-
-function updateThemeButton() {
-  const isLight = root.dataset.theme === "light";
-  themeToggle.setAttribute("aria-checked", isLight ? "false" : "true");
-}
-
-function toggleTheme() {
-  const nextTheme = root.dataset.theme === "light" ? "dark" : "light";
-  root.dataset.theme = nextTheme;
-  window.localStorage.setItem("interdict-theme", nextTheme);
-  updateThemeButton();
-}
-
-function showRunStep(index) {
-  const step = runSteps[index];
-
-  runTabs.forEach((tab, tabIndex) => {
-    tab.classList.toggle("is-active", tabIndex === index);
-  });
-
-  runStepLabel.textContent = step.label;
-  runStepTitle.textContent = step.title;
-  runStepCopy.textContent = step.copy;
-  runStepCode.textContent = step.code;
-  runStepExpected.textContent = step.expected;
-  runStepNote.textContent = step.note;
-  copyCommand.textContent = "Copy command";
-}
-
-function setupLagScroll() {
-  if (!lagItems.length || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
-    return;
-  }
-
-  root.classList.add("is-lagging");
-  let targetY = window.scrollY;
-  let currentY = targetY;
-  let rafId = null;
-
-  function tick() {
-    currentY += (targetY - currentY) * 0.085;
-    lagItems.forEach((item) => {
-      const factor = Number.parseFloat(item.style.getPropertyValue("--lag")) || 0.05;
-      item.style.setProperty("--lag-y", `${(targetY - currentY) * factor}px`);
-    });
-
-    if (Math.abs(targetY - currentY) > 0.15) {
-      rafId = window.requestAnimationFrame(tick);
-    } else {
-      currentY = targetY;
-      rafId = null;
+const revealObserver = new IntersectionObserver(
+  (entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) {
+        entry.target.classList.add("in");
+        revealObserver.unobserve(entry.target);
+      }
     }
-  }
+  },
+  { threshold: 0.25 }
+);
+document.querySelectorAll(".reveal").forEach((el) => revealObserver.observe(el));
 
+/* ── 2. Hero headline blur-morph ──────────────────────────────── */
+
+const morphLines = [...document.querySelectorAll(".morph-line")];
+if (morphLines.length > 1 && !reduceMotion) {
+  let current = 0;
+  setInterval(() => {
+    morphLines[current].classList.remove("is-active");
+    current = (current + 1) % morphLines.length;
+    morphLines[current].classList.add("is-active");
+  }, 4600);
+}
+
+/* ── 3. Collage parallax (gentle, rAF-throttled) ──────────────── */
+
+const parallaxCards = [...document.querySelectorAll(".mini-card[data-speed]")];
+let parallaxTicking = false;
+function applyParallax() {
+  parallaxTicking = false;
+  const vh = window.innerHeight;
+  for (const card of parallaxCards) {
+    const rect = card.parentElement.getBoundingClientRect();
+    const offset = (rect.top + rect.height / 2 - vh / 2) * Number(card.dataset.speed);
+    card.style.transform = `translateY(${offset}px)`;
+  }
+}
+if (parallaxCards.length && !reduceMotion) {
   window.addEventListener(
     "scroll",
     () => {
-      targetY = window.scrollY;
-      if (rafId === null) {
-        rafId = window.requestAnimationFrame(tick);
+      if (!parallaxTicking) {
+        parallaxTicking = true;
+        requestAnimationFrame(applyParallax);
       }
     },
     { passive: true }
   );
 }
 
-async function copyRunCommand() {
-  try {
-    await navigator.clipboard.writeText(runStepCode.textContent);
-    copyCommand.textContent = "Copied";
-  } catch {
-    copyCommand.textContent = "Select manually";
+/* ── 4. Sticky lifecycle scene ────────────────────────────────── */
+
+const lifecycleTrack = document.querySelector(".lifecycle-track");
+const lifecycleScene = document.getElementById("lifecycleScene");
+const lifeSteps = [...document.querySelectorAll(".life-step")];
+const lifeLineFill = document.querySelector(".life-line-fill");
+const headA = document.querySelector(".life-head.head-a");
+const headB = document.querySelector(".life-head.head-b");
+const STEP_THRESHOLDS = [0.08, 0.28, 0.48, 0.66, 0.84];
+
+let blastStarted = false;
+
+function updateLifecycle() {
+  if (!lifecycleTrack || window.innerWidth <= 640) return;
+  const rect = lifecycleTrack.getBoundingClientRect();
+  const total = rect.height - window.innerHeight;
+  const progress = Math.min(1, Math.max(0, -rect.top / total));
+
+  lifeLineFill.style.setProperty("--progress", progress);
+  lifeLineFill.style.transform = `scaleY(${progress})`;
+
+  lifeSteps.forEach((step, i) => {
+    step.classList.toggle("active", progress >= STEP_THRESHOLDS[i]);
+  });
+
+  // swap headline halfway through, like Opacity's two-phase scenes
+  const secondHalf = progress > 0.5;
+  headA.classList.toggle("is-active", !secondHalf);
+  headB.classList.toggle("is-active", secondHalf);
+
+  // kick off the blast-radius counter when its step lights up
+  if (!blastStarted && progress >= STEP_THRESHOLDS[1]) {
+    blastStarted = true;
+    animateBlastCount();
   }
 }
 
-enterButton.addEventListener("click", openSite);
-themeToggle.addEventListener("click", toggleTheme);
-
-runTabs.forEach((tab, index) => {
-  tab.addEventListener("click", () => showRunStep(index));
-});
-
-copyCommand.addEventListener("click", copyRunCommand);
-
-if (window.location.hash && window.location.hash !== "#gate") {
-  openSite();
+if (lifecycleTrack) {
+  window.addEventListener("scroll", () => requestAnimationFrame(updateLifecycle), {
+    passive: true,
+  });
+  updateLifecycle();
 }
 
-updateThemeButton();
-showRunStep(0);
-setupLagScroll();
+/* ── 5. Blast-radius counter ──────────────────────────────────── */
+
+function animateBlastCount() {
+  const el = document.querySelector(".blast-count");
+  if (!el) return;
+  const target = Number(el.dataset.target);
+  if (reduceMotion) {
+    el.textContent = target.toLocaleString("en-US");
+    return;
+  }
+  const duration = 1400;
+  const start = performance.now();
+  function tick(now) {
+    const t = Math.min(1, (now - start) / duration);
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = Math.round(target * eased).toLocaleString("en-US");
+    if (t < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
+
+// mobile fallback: the scene isn't sticky, so count when it scrolls into view
+if (window.innerWidth <= 640) {
+  const blastEl = document.querySelector(".blast-count");
+  if (blastEl) {
+    new IntersectionObserver(
+      (entries, obs) => {
+        if (entries[0].isIntersecting) {
+          animateBlastCount();
+          obs.disconnect();
+        }
+      },
+      { threshold: 0.6 }
+    ).observe(blastEl);
+  }
+}
+
+/* ── 6. Header inverts over dark sections ─────────────────────── */
+
+const header = document.getElementById("siteHeader");
+const darkSections = [...document.querySelectorAll("[data-dark]")];
+
+function updateHeaderTheme() {
+  const probeY = header.offsetHeight / 2;
+  const onDark = darkSections.some((section) => {
+    const rect = section.getBoundingClientRect();
+    return rect.top <= probeY && rect.bottom >= probeY;
+  });
+  header.classList.toggle("on-dark", onDark);
+}
+window.addEventListener("scroll", () => requestAnimationFrame(updateHeaderTheme), {
+  passive: true,
+});
+updateHeaderTheme();
+
+/* ── 7. Copy-to-clipboard install buttons ─────────────────────── */
+
+document.querySelectorAll(".copy-install").forEach((button) => {
+  const hint = button.querySelector(".copy-hint");
+  const original = hint.textContent;
+  button.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(button.dataset.copy);
+      hint.textContent = "copied";
+    } catch {
+      hint.textContent = "select + copy";
+    }
+    setTimeout(() => (hint.textContent = original), 1600);
+  });
+});
+
+/* ── 8. Waitlist form ─────────────────────────────────────────── */
+
+// Paste a form endpoint here (Formspree, Basin, your own API…).
+// Example: "https://formspree.io/f/xxxxxxxx"
+const WAITLIST_ENDPOINT = "";
+const FALLBACK_EMAIL = "pr482@cornell.edu";
+
+const waitlistForm = document.getElementById("waitlistForm");
+const waitlistNote = document.getElementById("waitlistNote");
+
+if (waitlistForm) {
+  waitlistForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const email = document.getElementById("waitlistEmail").value.trim();
+    if (!email || !email.includes("@")) {
+      waitlistNote.textContent = "Please enter a valid email address.";
+      return;
+    }
+
+    if (!WAITLIST_ENDPOINT) {
+      // no backend configured yet — fall back to a pre-filled email
+      window.location.href =
+        `mailto:${FALLBACK_EMAIL}` +
+        `?subject=${encodeURIComponent("Interdict Team Cloud waitlist")}` +
+        `&body=${encodeURIComponent(`Please add ${email} to the waitlist.`)}`;
+      waitlistNote.textContent = "Opening your email client to complete signup…";
+      return;
+    }
+
+    try {
+      waitlistNote.textContent = "Joining…";
+      const res = await fetch(WAITLIST_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      waitlistForm.reset();
+      waitlistNote.textContent = "You're on the list. We'll be in touch soon.";
+    } catch {
+      waitlistNote.textContent =
+        "Something went wrong — email us at " + FALLBACK_EMAIL + " instead.";
+    }
+  });
+}
