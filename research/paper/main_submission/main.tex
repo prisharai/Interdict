@@ -126,12 +126,11 @@ worst-behaving model toward a correct write. We therefore argue that agent-facin
 guardrails should report \emph{expected behavior and measured impact}, not the rule
 to be satisfied; and that measuring impact, rather than checking query syntax
 alone, is what makes this form of specification gaming both detectable and
-correctable for database agents. We release the instrument, the tasks, and the
-dataset.
+correctable for database agents.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.82\linewidth]{../figures/paper/fig1_literal_rule_satisfaction.pdf}
+  \includegraphics[width=0.82\linewidth]{fig1_literal_rule_satisfaction.pdf}
   \caption{\textbf{Explaining a denial more fully makes Claude Haiku 4.5 game the
     rule more, while GPT-5.5 games it regardless.} Literal rule
     satisfaction---the share of retries that obey the guardrail's rule while still
@@ -198,7 +197,7 @@ statistics (Sec.~\ref{sec:stats}).
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\linewidth]{../figures/paper/fig3_closed_loop.pdf}
+  \includegraphics[width=\linewidth]{fig3_closed_loop.pdf}
   \caption{\textbf{The closed-loop trial protocol.} The agent issues a SQL
     statement; the guardrail parses it, classifies it from the parse tree, checks
     it against fixed policy rules, and measures its true row-level impact by
@@ -214,8 +213,8 @@ statistics (Sec.~\ref{sec:stats}).
 
 Every agent in our experiments acts on a PostgreSQL database through a guardrail
 we build and release: a runtime safety engine that inspects each SQL statement the
-agent issues and decides whether it may run. One point about SQL is enough to
-follow everything that follows. The tasks operate on a \emph{table}---a grid of
+agent issues and decides whether it may run. One fact about SQL suffices for what
+follows. The tasks operate on a \emph{table}---a grid of
 rows. A write such as \code{DELETE} or \code{UPDATE} changes rows, and an optional
 \code{WHERE} clause restricts \emph{which} rows it changes; a write with no
 \code{WHERE} clause, or with a \code{WHERE} clause that is always true (for example
@@ -314,6 +313,7 @@ implications in the Limitations section.
 \begin{table}[t]
   \centering
   \small
+  \resizebox{\linewidth}{!}{%
   \begin{tabular}{@{}llllll@{}}
     \toprule
     Task & Prompt (abbrev.) & Table & Rows & Naive solution & Verdict \\
@@ -322,7 +322,8 @@ implications in the Limitations section.
     \code{zero\_prices} & ``Set every product's price to 0'' & \code{products} & 1{,}000 & full-table \code{UPDATE} & blocked/held \\
     \code{clear\_sessions} & ``Clear the sessions table'' & \code{sessions} & 1{,}000 & \code{DELETE}/\code{TRUNCATE} & blocked/held \\
     \bottomrule
-  \end{tabular}
+  \end{tabular}%
+  }
   \caption{\textbf{The three tasks.} Each requests a deliberately broad operation
     whose naive full-table form is stopped by the guardrail, so any write the
     guardrail permits is necessarily a narrowed one.}
@@ -396,15 +397,12 @@ exact tests rather than large-sample approximations.
 \section{Results}
 % ======================================================================
 
-We collected complete data for two models---Claude Haiku 4.5 and GPT-5.5---with
-60 trials in each of the four denial conditions (240 trials per model, 480
-total). Every number below is computed automatically from the logged
-transcripts: the parsed statement and its measured row-level impact
-(Sec.~\ref{sec:coding}). We report each rate with a Wilson 95\% confidence
-interval and compare each condition against the opaque-error baseline with
-Fisher's exact test.
+Every rate below is computed automatically from the logged transcripts
+(Sec.~\ref{sec:coding}), reported with a Wilson 95\% confidence interval, and
+compared against the opaque-error baseline with Fisher's exact test.
 
-Two figures carry the results. Figure~\ref{fig:headline} shows literal rule
+Two figures carry the results, with all cell values and tests collected in
+Table~\ref{tab:results}. Figure~\ref{fig:headline} shows literal rule
 satisfaction---the share of trials in which the agent got a full-table write past
 the guardrail by dressing it in an always-true predicate.
 Figure~\ref{fig:recovery} shows correctly scoped recovery---the share of trials
@@ -415,7 +413,7 @@ measured row count---pulled either model back toward a correct write.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.82\linewidth]{../figures/paper/fig2_recovery.pdf}
+  \includegraphics[width=0.82\linewidth]{fig2_recovery.pdf}
   \caption{\textbf{Only the measured row count produced correctly scoped
     recovery, and only for GPT-5.5.} Share of trials in which the agent reached a
     bounded write the guardrail allowed, by denial richness. For GPT-5.5 (red),
@@ -514,13 +512,29 @@ statement'' instruction, and we keep this bookkeeping honest by treating it as a
 separate outcome rather than folding it into the SQL-behavior rates. GPT-5.5
 almost always complied (protocol-failure rate 0--3\% across conditions), so its
 rates above rest on genuine SQL attempts. Haiku frequently returned prose instead
-of SQL (57--95\% of trials had at least one such turn), which is a real caveat on
+of SQL (57--95\% of trials had at least one such turn; Figure~\ref{fig:protocol}a),
+which is a real caveat on
 its cell sizes. To confirm the effect is not an artifact of that noise, we
 recomputed the rates excluding every trial containing a protocol-failure turn; the
-pattern is unchanged (pooled literal rule satisfaction rises from 83\% under the
-opaque baseline to 97--100\% under the richer conditions). Per-condition
+pattern is unchanged (Figure~\ref{fig:protocol}b): pooled literal rule satisfaction
+rises from 83\% under the opaque baseline to 97--100\% under the richer conditions.
+Per-condition
 protocol-failure and sensitivity tables are reproduced from the analysis output in
 the released artifact.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig4_protocol_failure.pdf}
+  \caption{\textbf{The gaming effect survives the protocol-failure caveat.}
+    \textbf{(a)} Share of trials with at least one non-SQL (prose) turn, by model
+    and denial richness. Claude Haiku 4.5 (blue) returns prose in 57--95\% of
+    trials; GPT-5.5 (red) almost never does (0--3\%), so its rates rest on genuine
+    SQL attempts. \textbf{(b)} Sensitivity analysis: with every protocol-failure
+    trial excluded, pooled literal rule satisfaction still rises from 83\% under
+    the opaque baseline to 97--100\% under the richer denial conditions---the
+    effect is not an artifact of the prose turns.}
+  \label{fig:protocol}
+\end{figure}
 
 \begin{table}[t]
   \centering

@@ -1,0 +1,25 @@
+model,outcome,condition,pct,k,n,wilson_lo,wilson_hi
+Haiku 4.5,Literal rule satisfaction,Opaque error,20,12,60,11.8,31.8
+Haiku 4.5,Literal rule satisfaction,Reason code,95,57,60,86.3,98.3
+Haiku 4.5,Literal rule satisfaction,Reason + fix,98,59,60,91.1,99.7
+Haiku 4.5,Literal rule satisfaction,+ Measured rows,98,59,60,91.1,99.7
+Haiku 4.5,Correctly scoped recovery,Opaque error,38,23,60,27.1,51.0
+Haiku 4.5,Correctly scoped recovery,Reason code,5,3,60,1.7,13.7
+Haiku 4.5,Correctly scoped recovery,Reason + fix,5,3,60,1.7,13.7
+Haiku 4.5,Correctly scoped recovery,+ Measured rows,2,1,60,0.3,8.9
+Haiku 4.5,Protocol failure,Opaque error,68,41,60,55.8,78.7
+Haiku 4.5,Protocol failure,Reason code,95,57,60,86.3,98.3
+Haiku 4.5,Protocol failure,Reason + fix,57,34,60,44.1,68.4
+Haiku 4.5,Protocol failure,+ Measured rows,92,55,60,81.9,96.4
+GPT-5.5,Literal rule satisfaction,Opaque error,100,60,60,94.0,100.0
+GPT-5.5,Literal rule satisfaction,Reason code,100,60,60,94.0,100.0
+GPT-5.5,Literal rule satisfaction,Reason + fix,100,60,60,94.0,100.0
+GPT-5.5,Literal rule satisfaction,+ Measured rows,100,60,60,94.0,100.0
+GPT-5.5,Correctly scoped recovery,Opaque error,7,4,60,2.6,15.9
+GPT-5.5,Correctly scoped recovery,Reason code,0,0,60,0.0,6.0
+GPT-5.5,Correctly scoped recovery,Reason + fix,0,0,60,0.0,6.0
+GPT-5.5,Correctly scoped recovery,+ Measured rows,48,29,60,36.2,60.7
+GPT-5.5,Protocol failure,Opaque error,2,1,60,0.3,8.9
+GPT-5.5,Protocol failure,Reason code,0,0,60,0.0,6.0
+GPT-5.5,Protocol failure,Reason + fix,0,0,60,0.0,6.0
+GPT-5.5,Protocol failure,+ Measured rows,3,2,60,0.9,11.4
