@@ -1,0 +1,111 @@
+# CI for Interdict.
+#
+# Three independent signals on every push/PR:
+#   lint          — ruff + black, no database needed
+#   test          — full pytest suite against a seeded Postgres 16
+#   latency-gate  — the §4 budget check: added p99 on the pass-through
+#                   path must stay < 5 ms, or the build fails
+#
+# The Postgres service mirrors docker-compose.yml (host port 5433, db
+# "pagila") so the test suite's default AGENT_DB_DSN works unchanged.
+# Seed scripts in db/ run via psql because GitHub service containers
+# start before checkout and can't mount the repo as an init volume.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AGENT_DB_DSN: postgresql://postgres:postgres@localhost:5433/pagila
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dev dependencies
+        run: uv sync --group dev --python 3.11
+      - name: ruff
+        run: uv run ruff check .
+      - name: black
+        run: uv run black --check .
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pagila
+        ports:
+          - "5433:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pagila"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dev dependencies
+        run: uv sync --group dev --python 3.11
+      - name: Seed database (Pagila + large tables)
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for f in db/01-pagila-schema.sql db/02-pagila-data.sql db/03-large-tables.sql; do
+            echo "applying $f"
+            psql -h localhost -p 5433 -U postgres -d pagila \
+              -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+      - name: pytest
+        run: uv run pytest
+
+  latency-gate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pagila
+        ports:
+          - "5433:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pagila"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Sync dev dependencies
+        run: uv sync --group dev --python 3.11
+      - name: Seed database (Pagila + large tables)
+        env:
+          PGPASSWORD: postgres
+        run: |
+          for f in db/01-pagila-schema.sql db/02-pagila-data.sql db/03-large-tables.sql; do
+            echo "applying $f"
+            psql -h localhost -p 5433 -U postgres -d pagila \
+              -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+      - name: Latency gate (§4 budget — added p99 < 5 ms)
+        run: uv run python -m benchmarks.ci_latency_gate

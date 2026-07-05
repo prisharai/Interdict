@@ -1,5 +1,7 @@
 # Interdict
 
+[![CI](https://github.com/prisharai/Interdict/actions/workflows/ci.yml/badge.svg)](https://github.com/prisharai/Interdict/actions/workflows/ci.yml)
+
 **A runtime safety layer between AI agents and Postgres.** Developer preview.
 
 ## What it does

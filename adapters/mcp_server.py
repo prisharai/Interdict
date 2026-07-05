@@ -99,8 +99,10 @@ def _held_summary(approval_id: str, simulation: dict | None) -> str:
         f"approval_id={approval_id}. "
         f"{_simulation_summary(simulation)}.\n\n"
         "NEXT STEPS:\n"
-        f"1. In YOUR terminal (not here): AGENT_OPERATOR_TOKEN=your_token interdict approve {approval_id}\n"
-        f"2. Then in this chat: call run_approved_query(approval_id=\"{approval_id}\")\n"
+        "1. In YOUR terminal (not here): "
+        f"AGENT_OPERATOR_TOKEN=your_token interdict approve {approval_id}\n"
+        "2. Then in this chat: call "
+        f'run_approved_query(approval_id="{approval_id}")\n'
         "   (No token needed - the approval already happened)"
     )
 
@@ -116,7 +118,7 @@ def _executed_summary(
     if action_id:
         return (
             f"Interdict allowed and executed {status or 'the write'}. "
-            f"undo_id={action_id} - call revert_write(action_id=\"{action_id}\") "
+            f'undo_id={action_id} - call revert_write(action_id="{action_id}") '
             "to reverse this change."
         )
     if status:
@@ -662,9 +664,14 @@ class ShadowSession:
                 current = await self._approvals.get(conn, approval_id)
         if row is None:
             status = current["status"] if current else "unknown"
-            if current is not None and current.get("expired") and status in (
-                "pending",
-                "approved",
+            if (
+                current is not None
+                and current.get("expired")
+                and status
+                in (
+                    "pending",
+                    "approved",
+                )
             ):
                 status = "expired"
             hints = {
@@ -827,9 +834,7 @@ async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     audit = AuditLog(AUDIT_LOG_PATH)
     await audit.start()
     undo_store = UndoStore(policy.undo) if policy.undo.enabled else None
-    approval_store = ApprovalStore(
-        policy.undo.schema, ttl_seconds=APPROVAL_TTL_SECONDS
-    )
+    approval_store = ApprovalStore(policy.undo.schema, ttl_seconds=APPROVAL_TTL_SECONDS)
     # Load the unique/PK column metadata once, off the hot path (sec. 4): it lets
     # a point write by a unique key skip simulation while a bulk write on a
     # non-unique column is still simulated. Ensure the approvals table exists in
@@ -909,9 +914,7 @@ async def run_approved_query(
     that was held -- it cannot run anything else, and it can only run once.
     """
     app: AppContext = ctx.request_context.lifespan_context
-    return await app.session.run_approved_query(
-        approval_id, executor=_mcp_actor(ctx)
-    )
+    return await app.session.run_approved_query(approval_id, executor=_mcp_actor(ctx))
 
 
 @mcp.tool()
@@ -1118,7 +1121,7 @@ def _operator_cli(argv: list[str]) -> int:
             if decided == APPROVED:
                 print(
                     f"Approved {approval_id}. The agent can now execute it with "
-                    f"run_approved_query(approval_id=\"{approval_id}\")."
+                    f'run_approved_query(approval_id="{approval_id}").'
                 )
             else:
                 print(f"Denied {approval_id}. It will not run.")
