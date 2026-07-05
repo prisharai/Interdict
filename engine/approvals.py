@@ -24,6 +24,8 @@ import hashlib
 import json
 from typing import Any
 
+from engine.undo import _execute_tolerating_duplicates
+
 
 def _q(identifier: str) -> str:
     """Quote a SQL identifier (schema/table names only, never values)."""
@@ -68,11 +70,18 @@ class ApprovalStore:
         return f"{_q(self._schema)}.pending_approval"
 
     async def ensure_schema(self, conn) -> None:
-        """Create the approvals schema/table if missing. Idempotent."""
+        """Create the approvals schema/table if missing. Idempotent.
+
+        Duplicate-object errors are tolerated: ``IF NOT EXISTS`` still races
+        under concurrent first use (see ``_execute_tolerating_duplicates``).
+        """
         if self._ensured:
             return
-        await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_q(self._schema)}")
-        await conn.execute(
+        await _execute_tolerating_duplicates(
+            conn, f"CREATE SCHEMA IF NOT EXISTS {_q(self._schema)}"
+        )
+        await _execute_tolerating_duplicates(
+            conn,
             f"""CREATE TABLE IF NOT EXISTS {self._table} (
                 approval_id  uuid PRIMARY KEY,
                 created_at   timestamptz NOT NULL DEFAULT now(),
@@ -86,7 +95,7 @@ class ApprovalStore:
                 decided_by   text,
                 decided_at   timestamptz,
                 executed_at  timestamptz
-            )"""
+            )""",
         )
         self._ensured = True
 

@@ -79,6 +79,42 @@ def _q(ident: str) -> str:
     return '"' + ident.replace('"', '""') + '"'
 
 
+async def _rollback_quietly(tr) -> None:
+    """Best-effort rollback for exception paths.
+
+    When the failure that got us here killed the connection itself (terminated
+    backend, dropped socket), the server has already aborted the transaction --
+    a failed client-side ROLLBACK must not mask the original error by raising
+    through the safety layer.
+    """
+    try:
+        await tr.rollback()
+    except Exception:
+        pass
+
+
+async def _execute_tolerating_duplicates(conn, sql: str) -> None:
+    """Run DDL, treating "already exists" as success.
+
+    Postgres's ``IF NOT EXISTS`` still errors when two sessions create the
+    same object at the same instant (the loser collides on the catalog row).
+    That race is real for us: the sidecar schema is created lazily on the
+    first write, and concurrent agents can both be "first".
+    """
+    import asyncpg
+
+    try:
+        await conn.execute(sql)
+    except (
+        asyncpg.exceptions.UniqueViolationError,
+        asyncpg.exceptions.DuplicateSchemaError,
+        asyncpg.exceptions.DuplicateTableError,
+        asyncpg.exceptions.DuplicateObjectError,
+        asyncpg.exceptions.DuplicateColumnError,
+    ):
+        pass  # another session created it first — the object exists, we're done
+
+
 def _tag_count(tag: str | None) -> int:
     """Affected-row count from a command tag ('UPDATE 3' / 'INSERT 0 3')."""
     if not tag:
@@ -244,11 +280,20 @@ class UndoStore:
         return f"{_q(self._schema)}.undo_log"
 
     async def ensure_schema(self, conn) -> None:
-        """Create the undo schema/table if missing. Idempotent; runs once."""
+        """Create the undo schema/table if missing. Idempotent; runs once.
+
+        ``IF NOT EXISTS`` is not concurrency-safe in Postgres: two sessions
+        creating the same table at the same instant can still collide on the
+        pg_type row. First-ever writes from concurrent agents hit exactly
+        that, so duplicate errors here mean "another session won" — fine.
+        """
         if self._ensured:
             return
-        await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {_q(self._schema)}")
-        await conn.execute(
+        await _execute_tolerating_duplicates(
+            conn, f"CREATE SCHEMA IF NOT EXISTS {_q(self._schema)}"
+        )
+        await _execute_tolerating_duplicates(
+            conn,
             f"""CREATE TABLE IF NOT EXISTS {self._log} (
                 action_id     uuid PRIMARY KEY,
                 created_at    timestamptz NOT NULL DEFAULT now(),
@@ -264,20 +309,23 @@ class UndoStore:
                 status        text NOT NULL DEFAULT 'active',
                 reverted_at   timestamptz,
                 reverted_by   jsonb
-            )"""
+            )""",
         )
         # Migrate an older log that predates after_images.
-        await conn.execute(
+        await _execute_tolerating_duplicates(
+            conn,
             f"ALTER TABLE {self._log} "
-            "ADD COLUMN IF NOT EXISTS after_images jsonb NOT NULL DEFAULT '[]'::jsonb"
+            "ADD COLUMN IF NOT EXISTS after_images jsonb NOT NULL DEFAULT '[]'::jsonb",
         )
-        await conn.execute(
+        await _execute_tolerating_duplicates(
+            conn,
             f"ALTER TABLE {self._log} "
             f"ADD COLUMN IF NOT EXISTS principal jsonb NOT NULL "
-            f"DEFAULT '{_PRE_V2_PRINCIPAL_JSON}'::jsonb"
+            f"DEFAULT '{_PRE_V2_PRINCIPAL_JSON}'::jsonb",
         )
-        await conn.execute(
-            f"ALTER TABLE {self._log} " "ADD COLUMN IF NOT EXISTS reverted_by jsonb"
+        await _execute_tolerating_duplicates(
+            conn,
+            f"ALTER TABLE {self._log} ADD COLUMN IF NOT EXISTS reverted_by jsonb",
         )
         self._ensured = True
 
@@ -477,7 +525,7 @@ async def execute_with_undo(
         )
         await tr.commit()
     except Exception as exc:
-        await tr.rollback()
+        await _rollback_quietly(tr)
         return UndoOutcome(
             None,
             [],
@@ -597,7 +645,7 @@ async def revert(
         await store.mark_reverted(conn, action_id, reverted_by)
         await tr.commit()
     except Exception as exc:
-        await tr.rollback()
+        await _rollback_quietly(tr)
         return RevertResult(
             False, action_id, operation=op, error=f"{type(exc).__name__}: {exc}"
         )

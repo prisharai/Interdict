@@ -110,7 +110,14 @@ class AuditLog:
                     batch.append(self._queue.get_nowait())
                 except asyncio.QueueEmpty:
                     break
-            await asyncio.to_thread(self._write_batch, batch)
+            try:
+                await asyncio.to_thread(self._write_batch, batch)
+            except OSError:
+                # Disk gone read-only/full/deleted: logging is fail-open, so
+                # count the loss and keep consuming -- a dead consumer would
+                # silently fill the queue and drop everything forever after.
+                self.dropped += len(batch)
+                self.last_drop_ts = time.time()
 
     def _write_batch(self, batch: list[dict[str, Any]]) -> None:
         """Blocking disk write; runs in a worker thread, off the event loop."""
@@ -131,7 +138,11 @@ class AuditLog:
             except asyncio.QueueEmpty:
                 break
         if remaining:
-            await asyncio.to_thread(self._write_batch, remaining)
+            try:
+                await asyncio.to_thread(self._write_batch, remaining)
+            except OSError:
+                self.dropped += len(remaining)
+                self.last_drop_ts = time.time()
         self._task.cancel()
         try:
             await self._task
