@@ -94,60 +94,6 @@ Holds expire after 30 minutes so stale measurements cannot be acted on. Every
 successful write returns an `undo_id`; ask the agent to call `revert_write` to
 reverse it.
 
-## Example
-
-```text
-> UPDATE accounts SET balance = 0
-  blocked: no WHERE clause -- would affect every row
-
-> UPDATE accounts SET balance = 0 WHERE id = 1
-  UPDATE 1 -- undo id 3811adb4
-
-> DELETE FROM accounts WHERE balance < 2000
-  held: would delete 2,300,000 rows -- approval required
-
-> \undo 3811adb4
-  reverted -- rows restored
-```
-
-## What Interdict Provides
-
-- **Measured blast radius.** Risky writes are simulated in a bounded
-  `BEGIN`/`ROLLBACK` transaction before they are allowed, held, or denied.
-- **Reversible writes.** Allowed writes capture before-images and return an
-  undo handle; writes that cannot be safely recorded are blocked.
-- **Deterministic policy.** SQL is parsed with `pglast`, not regexes, so
-  comments, casing, aliases, and wrapped writes do not bypass classification.
-- **Machine-readable repair hints.** Blocks include reason codes and suggested
-  fixes so an agent can self-correct without guessing.
-- **Fail-safe posture.** Writes fail closed on uncertainty; reads fail open to
-  avoid taking down read availability.
-
-## How It Works
-
-```text
-AI agent --(MCP)--> [thin adapter] --> [SAFETY ENGINE] --> Postgres
-                         parse -> classify -> policy -> measure? -> decide
-                                                  |
-                                                  +--> undo capture on writes
-                                                  +--> async audit / intent signals
-```
-
-The hot path is intentionally small: cached parse, classification, and
-in-memory policy checks. Measurement is gated to writes that need it and runs
-with statement and lock timeouts. Audit logging and advisory intent checks are
-asynchronous and never determine the final verdict.
-
-Current MCP tools:
-
-```text
-run_query
-list_pending_approvals
-run_approved_query
-revert_write
-interdict_status
-```
-
 ## Benchmarks
 
 Interdict keeps a hard latency budget: the pass-through path must stay under
@@ -180,19 +126,6 @@ request.
 
 `policies/pagila.yaml` shows a stricter allowlist-style policy for the bundled
 development database.
-
-## Honest Limits
-
-- Interdict catches blast-radius and scope-contradiction mistakes and makes
-  allowed writes reversible. It does not claim to catch every valid-but-wrong
-  SQL statement.
-- Transactional simulation and undo cannot reverse external side effects such
-  as triggers that call out, consumed sequences, or unsafe cascades. Shapes that
-  cannot be recorded safely are blocked by default.
-- LLM intent checks are advisory only. Deterministic parsing, policy,
-  measurement, and undoability remain the load-bearing safety controls.
-- Use a least-privilege Postgres role and review policy thresholds before
-  pointing Interdict at production data.
 
 ## Development
 
