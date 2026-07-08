@@ -92,6 +92,10 @@ packages = ["engine", "adapters"]
 [tool.hatch.build.targets.sdist]
 include = [
     "/README.md",
+    "/LICENSE",
+    "/CONTRIBUTING.md",
+    "/CODE_OF_CONDUCT.md",
+    "/SECURITY.md",
     "/pyproject.toml",
     "/engine",
     "/adapters",
