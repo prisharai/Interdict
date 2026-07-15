@@ -51,10 +51,8 @@
             >
           </h1>
           <p class="hero-sub reveal">
-            Interdict sits between your agent and Postgres. It measures how many
-            rows a risky write would really touch <em>before</em> it runs, holds
-            it for human approval, and makes every allowed write reversible with
-            one command.
+            &ldquo;You&rsquo;re absolutely right. I should not have deleted the
+            production database.&rdquo; Never let your AI talk to you like that.
           </p>
           <div class="hero-cta reveal">
             <a class="pill-cta big" href="#waitlist">Join the waitlist</a>
@@ -66,25 +64,7 @@
         </div>
 
         <div class="hero-stage" aria-hidden="false">
-          <div class="hero-glow" aria-hidden="true"></div>
-          <div class="terminal hero-terminal" role="img" aria-label="Terminal showing Interdict blocking, holding, approving and undoing an agent write">
-            <div class="terminal-bar">
-              <span class="dots"><i></i><i></i><i></i></span>
-              <span class="terminal-title">agent → interdict → postgres</span>
-            </div>
-            <pre><code><span class="t-agent">agent</span>  DELETE FROM customers;
-<span class="t-bad">✕ blocked</span> · WRITE_WITHOUT_WHERE — this would erase every row
-         <span class="t-dim">fix: add a WHERE clause that scopes the delete</span>
-
-<span class="t-agent">agent</span>  DELETE FROM customers WHERE last_order &lt; '2019-01-01';
-<span class="t-warn">⏸ held</span>    · blast radius <span class="t-strong">2,300,000 rows</span> · approval_id 8f41…
-
-<span class="t-you">you</span>    $ interdict approve 8f41
-<span class="t-good">✓ approved</span> · executed · undo_id 3811adb4
-
-<span class="t-you">you</span>    revert 3811adb4
-<span class="t-good">✓ reverted</span> — 2,300,000 rows restored</code></pre>
-          </div>
+          <img class="hero-image" src="ref-image.jpeg" alt="Terminal showing Interdict blocking, holding, approving and undoing an agent write" />
         </div>
       </section>
 

@@ -261,21 +261,13 @@ code, pre { font-family: var(--mono); }
   align-items: flex-end;
 }
 
-.hero-glow {
-  position: absolute;
-  bottom: -42%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 130vw;
-  height: 80vh;
-  background: radial-gradient(
-    ellipse 55% 60% at 50% 100%,
-    rgba(61, 121, 255, 0.85) 0%,
-    rgba(43, 99, 240, 0.45) 38%,
-    rgba(43, 99, 240, 0) 72%
-  );
-  filter: blur(30px);
-  pointer-events: none;
+.hero-image {
+  width: min(860px, 92vw);
+  height: auto;
+  display: block;
+  border-radius: 14px 14px 0 0;
+  position: relative;
+  z-index: 2;
 }
 
 .terminal {
