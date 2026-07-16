@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import secrets
@@ -27,7 +28,24 @@ from engine.approvals import (
 from engine.audit import AuditLog
 from engine.classifier import DDL, WRITE, classify
 from engine.intent import check_intent, llm_second_opinion
-from engine.policy import Policy, ReasonCode, apply_blast_radius, apply_intent, evaluate
+from engine.migration import migrate_legacy_control
+from engine.object_identity import classification_tables, load_object_fingerprint
+from engine.policy import (
+    Policy,
+    ReasonCode,
+    apply_approval_ceiling,
+    apply_blast_radius,
+    apply_intent,
+    apply_undo_capture_limit,
+    evaluate,
+    policy_fingerprint,
+)
+from engine.runtime_security import (
+    PRODUCTION,
+    inspect_database_security,
+    production_errors,
+    validate_profile,
+)
 from engine.schema import (
     Decision as SchemaDecision,
 )
@@ -48,6 +66,10 @@ DB_DSN = os.environ.get(
     "AGENT_DB_DSN",
     "postgresql://postgres:postgres@localhost:5433/pagila",
 )
+CONTROL_DSN = os.environ.get("AGENT_CONTROL_DSN")
+CONTROL_SCHEMA = "interdict_control"
+SAFETY_PROFILE = os.environ.get("AGENT_SAFETY_PROFILE", PRODUCTION)
+OPERATOR_ID = os.environ.get("AGENT_OPERATOR_ID")
 # Default to a stable per-user location: MCP clients launch this server from an
 # arbitrary cwd, so a relative default would scatter logs (or hide them).
 AUDIT_LOG_PATH = os.environ.get(
@@ -118,8 +140,8 @@ def _executed_summary(
     if action_id:
         return (
             f"Interdict allowed and executed {status or 'the write'}. "
-            f'undo_id={action_id} - call revert_write(action_id="{action_id}") '
-            "to reverse this change."
+            f'undo_id={action_id} - call request_revert(action_id="{action_id}") '
+            "to ask a human to approve reversing this change."
         )
     if status:
         return f"Interdict allowed and executed {status}. returned {row_count} row(s)."
@@ -139,6 +161,7 @@ class ShadowSession:
         unique_columns: frozenset[str] = frozenset(),
         operator_token: str | None = None,
         approval_store: ApprovalStore | None = None,
+        control_pool: asyncpg.Pool | None = None,
     ) -> None:
         self._pool = pool
         self._audit = audit
@@ -152,6 +175,7 @@ class ShadowSession:
         # opinion. None (default) => the LLM check never runs.
         self._llm_assessor = llm_assessor
         self._operator_token = operator_token
+        self._control_pool = control_pool or pool
         # Held writes are persisted (sidecar schema) so a human can approve
         # them from their own terminal -- the operator token never enters the
         # agent chat. The store is the single source of truth for holds.
@@ -190,6 +214,10 @@ class ShadowSession:
                 row["created_at"].isoformat() if row.get("created_at") else None
             ),
             "simulation": simulation,
+            "action_kind": row.get("action_kind", "sql"),
+            "undo_action_id": (
+                str(row["undo_action_id"]) if row.get("undo_action_id") else None
+            ),
         }
 
     def _maybe_schedule_llm(
@@ -251,6 +279,7 @@ class ShadowSession:
         stated_task: str | None = None,
         agent: str | None = None,
         operator_approved: bool = False,
+        approved_impact_ceiling: int | None = None,
     ) -> dict[str, Any]:
         """Evaluate policy, optionally simulate risky writes, then execute."""
         # Parse + classify on the hot path -- both LRU-cached, pure, ~0.1 ms cold.
@@ -267,6 +296,15 @@ class ShadowSession:
         # unknown/typo'd mode therefore enforces rather than silently passing
         # traffic through (Policy also rejects invalid modes at load time).
         enforce = self._policy is not None and self._policy.mode != "observe"
+        # Reserved control-plane schemas are a security boundary, not a tunable
+        # policy.  Observe mode may shadow ordinary rules, but it must never let
+        # an agent edit its own approvals or undo history.
+        hard_deny = bool(
+            decision
+            and any(
+                v.reason_code == ReasonCode.CONTROL_PLANE for v in decision.violations
+            )
+        )
 
         # Blast-radius simulation (Day 4) -- OFF the normal path: only a risky
         # write, only when enforcing and enabled. May escalate the decision to
@@ -276,7 +314,9 @@ class ShadowSession:
             and decision.allowed
             and enforce
             and self._policy.simulation.enabled
-            and is_risky_write(classification, self._unique_columns)
+            and classification.statement_count == 1
+            and bool(classification.statements)
+            and classification.statements[0].kind == WRITE
         ):
             async with self._pool.acquire() as sim_conn:
                 sim = await simulate(
@@ -287,6 +327,9 @@ class ShadowSession:
                     self._unique_columns,
                 )
             decision = apply_blast_radius(decision, sim, self._policy.simulation)
+            if self._policy.undo.enabled:
+                decision = apply_undo_capture_limit(decision, self._policy.undo)
+            decision = apply_approval_ceiling(decision, approved_impact_ceiling)
 
         # Intent-mismatch (Day 6) -- ADVISORY. Deterministic, in-memory, no I/O.
         # Compares the stated task to the statement's effect (blast radius from
@@ -316,7 +359,7 @@ class ShadowSession:
             self._maybe_schedule_llm(stated_task, classification, affected, agent, flag)
 
         # Blocked + enforcing: reject without going near the database.
-        if decision is not None and not decision.allowed and enforce:
+        if decision is not None and not decision.allowed and (enforce or hard_deny):
             violations = [v.to_dict() for v in decision.violations]
             primary_violation = violations[0] if violations else None
             block_reason = (
@@ -364,13 +407,17 @@ class ShadowSession:
             and not operator_approved
         ):
             approval_id = str(uuid4())
+            async with self._pool.acquire() as identity_conn:
+                object_fingerprint = await load_object_fingerprint(
+                    identity_conn, classification_tables(classification)
+                )
             schema_decision = decision_from_legacy_policy(
                 decision, approval_id=approval_id
             ).to_dict()
             # Persist the hold so a human can approve it out-of-band
             # (`interdict approve <id>` in their own terminal). The token
             # itself never enters the chat; only its hash is stored.
-            async with self._pool.acquire() as conn:
+            async with self._control_pool.acquire() as conn:
                 await self._approvals.create(
                     conn,
                     approval_id=approval_id,
@@ -386,6 +433,13 @@ class ShadowSession:
                         if self._operator_token
                         else None
                     ),
+                    policy_sha256=policy_fingerprint(self._policy),
+                    approved_rows=(
+                        decision.simulation.get("affected_rows")
+                        if decision.simulation
+                        else None
+                    ),
+                    object_fingerprint=object_fingerprint,
                 )
             self._audit.record(
                 {
@@ -442,15 +496,28 @@ class ShadowSession:
                     # Reversibility (Day 5): capture before/after images so this
                     # write can be reverted, then execute -- all in one
                     # transaction. Write path only; reads never reach here (sec. 4).
-                    outcome = await execute_with_undo(
-                        conn,
-                        effective_sql,
-                        classification,
-                        agent=agent,
-                        stated_task=stated_task,
-                        config=self._policy.undo,
-                        store=self._undo_store,
-                    )
+                    if self._control_pool is self._pool:
+                        outcome = await execute_with_undo(
+                            conn,
+                            effective_sql,
+                            classification,
+                            agent=agent,
+                            stated_task=stated_task,
+                            config=self._policy.undo,
+                            store=self._undo_store,
+                        )
+                    else:
+                        async with self._control_pool.acquire() as control_conn:
+                            outcome = await execute_with_undo(
+                                conn,
+                                effective_sql,
+                                classification,
+                                agent=agent,
+                                stated_task=stated_task,
+                                config=self._policy.undo,
+                                store=self._undo_store,
+                                control_conn=control_conn,
+                            )
                     status, rows, error = outcome.status, outcome.rows, outcome.error
                     action_id, reversible = outcome.action_id, outcome.reversible
                     # When not reversible, tell the agent why (structured).
@@ -616,7 +683,7 @@ class ShadowSession:
                 "error": "operator approval token is missing or invalid",
                 "decision": schema_decision,
             }
-        async with self._pool.acquire() as conn:
+        async with self._control_pool.acquire() as conn:
             granted = await self._approvals.decide(
                 conn,
                 approval_id,
@@ -642,6 +709,10 @@ class ShadowSession:
                 "error": "no such pending approval",
                 "decision": schema_decision,
             }
+        async with self._control_pool.acquire() as conn:
+            approved_row = await self._approvals.get(conn, approval_id)
+        if approved_row and approved_row.get("action_kind") == "revert":
+            return await self.run_approved_revert(approval_id, executor=operator)
         return await self.run_approved_query(approval_id, executor=operator)
 
     async def run_approved_query(
@@ -658,8 +729,10 @@ class ShadowSession:
         different statement. The approved->executed transition is atomic, so a
         hold can only ever execute once.
         """
-        async with self._pool.acquire() as conn:
-            row = await self._approvals.claim_approved(conn, approval_id)
+        async with self._control_pool.acquire() as conn:
+            row = await self._approvals.claim_approved(
+                conn, approval_id, action_kind="sql"
+            )
             if row is None:
                 current = await self._approvals.get(conn, approval_id)
         if row is None:
@@ -681,6 +754,9 @@ class ShadowSession:
                 ),
                 "denied": "An operator denied this write. Do not retry it.",
                 "executed": "This approval was already executed once.",
+                "executing": "This approval is already being executed.",
+                "failed": "This approval failed and cannot be reused.",
+                "approved": "This approval belongs to a different action type.",
                 "expired": (
                     "This hold expired: its measured blast radius is stale. "
                     "Re-run the query to get a fresh measurement and a new "
@@ -700,6 +776,46 @@ class ShadowSession:
                 "error": f"approval status is {status}",
                 "decision": schema_decision,
             }
+        expected_sql_hash = row.get("sql_sha256")
+        actual_sql_hash = hashlib.sha256(row["sql"].encode("utf-8")).hexdigest()
+        stale_reason = None
+        if expected_sql_hash and expected_sql_hash != actual_sql_hash:
+            stale_reason = "held SQL failed its integrity check"
+        elif row.get("policy_sha256") and row["policy_sha256"] != policy_fingerprint(
+            self._policy
+        ):
+            stale_reason = "policy changed after approval"
+        elif row.get("object_fingerprint"):
+            held_fingerprint = row["object_fingerprint"]
+            if isinstance(held_fingerprint, str):
+                held_fingerprint = json.loads(held_fingerprint)
+            current_classification = classify(row["sql"])
+            async with self._pool.acquire() as identity_conn:
+                current_fingerprint = await load_object_fingerprint(
+                    identity_conn, classification_tables(current_classification)
+                )
+            if current_fingerprint != held_fingerprint:
+                stale_reason = "database object identity changed after approval"
+        if stale_reason:
+            async with self._control_pool.acquire() as conn:
+                await self._approvals.finish_execution(
+                    conn,
+                    approval_id,
+                    succeeded=False,
+                    failure_reason=stale_reason,
+                )
+            return {
+                "ok": False,
+                "approval_id": approval_id,
+                "blocked": True,
+                "summary": f"Interdict did not execute: {stale_reason}.",
+                "error": stale_reason,
+                "decision": SchemaDecision.deny(
+                    reason_code=SchemaReasonCode.OPERATOR_APPROVAL_DENIED,
+                    explanation=stale_reason,
+                    repair_hint="Submit the query again for a fresh approval.",
+                ).to_dict(),
+            }
         self._audit.record(
             {
                 "event": "approval_executed",
@@ -716,23 +832,38 @@ class ShadowSession:
             stated_task=row.get("stated_task"),
             agent=row.get("agent"),
             operator_approved=True,
+            approved_impact_ceiling=row.get("approved_rows"),
         )
-        return {"ok": result.get("error") is None, "approval_id": approval_id, **result}
+        succeeded = result.get("error") is None and not result.get("blocked", False)
+        failure = (
+            None
+            if succeeded
+            else (
+                result.get("block_message") or result.get("error") or "execution denied"
+            )
+        )
+        async with self._control_pool.acquire() as conn:
+            await self._approvals.finish_execution(
+                conn,
+                approval_id,
+                succeeded=succeeded,
+                failure_reason=failure,
+            )
+        return {"ok": succeeded, "approval_id": approval_id, **result}
 
     async def pending_approvals(self) -> list[dict[str, Any]]:
         """Currently held writes (persisted), safe to show to an operator."""
-        async with self._pool.acquire() as conn:
+        async with self._control_pool.acquire() as conn:
             rows = await self._approvals.list_pending(conn)
         return [self._approval_summary(row) for row in rows]
 
-    async def revert_write(
+    async def request_revert(
         self,
         action_id: str,
         *,
         agent: str | None = None,
-        operator_token: str | None = None,
     ) -> dict[str, Any]:
-        """Undo a previously-recorded write by its action id. Itself audited."""
+        """Create a human-approval hold for an undo; never execute it here."""
         if self._undo_store is None:
             schema_decision = SchemaDecision.deny(
                 reason_code=SchemaReasonCode.NON_REVERSIBLE_WRITE,
@@ -748,47 +879,123 @@ class ShadowSession:
                 "error": "undo not enabled",
                 "decision": schema_decision,
             }
-        operator_override = self._operator_allowed(operator_token)
-        require_agent_match = (
-            bool(self._policy and self._policy.undo.require_agent_match)
-            and not operator_override
-        )
-        async with self._pool.acquire() as conn:
-            result = await revert(
+        async with self._control_pool.acquire() as conn:
+            record = await self._undo_store.get(conn, action_id)
+            if record is None or record["status"] != "active":
+                reason = "no active undo record exists for that action_id"
+                return {
+                    "ok": False,
+                    "action_id": action_id,
+                    "error": reason,
+                    "summary": f"Interdict could not request a revert: {reason}.",
+                    "decision": SchemaDecision.deny(
+                        reason_code=SchemaReasonCode.NON_REVERSIBLE_WRITE,
+                        explanation=reason,
+                    ).to_dict(),
+                }
+            approval_id = str(uuid4())
+            rows = int(record["row_count"])
+            simulation = {
+                "method": "recorded",
+                "estimated_rows": None,
+                "estimated_cost": None,
+                "exact_rows": rows,
+                "affected_rows": rows,
+                "timed_out": False,
+                "error": None,
+            }
+            await self._approvals.create(
                 conn,
-                action_id,
-                self._undo_store,
+                approval_id=approval_id,
+                sql=f"REVERT {action_id}",
+                stated_task=f"Revert Interdict action {action_id}",
                 agent=agent,
-                require_agent_match=require_agent_match,
+                principal=principal_from_legacy(agent).to_dict(),
+                simulation=simulation,
+                operator_token_hash=(
+                    token_hash(self._operator_token) if self._operator_token else None
+                ),
+                policy_sha256=policy_fingerprint(self._policy),
+                approved_rows=rows,
+                action_kind="revert",
+                undo_action_id=action_id,
             )
         self._audit.record(
             {
-                "event": "revert",
+                "event": "revert_requested",
                 "agent": agent,
                 "principal": principal_from_legacy(agent).to_dict(),
-                **result.to_dict(),
+                "action_id": action_id,
+                "approval_id": approval_id,
             }
         )
+        return {
+            "ok": True,
+            "action_id": action_id,
+            "approval_id": approval_id,
+            "requires_confirmation": True,
+            "simulation": simulation,
+            "summary": _held_summary(approval_id, simulation),
+            "decision": SchemaDecision.hold_for_approval(
+                approval_id=approval_id,
+                reason_code=SchemaReasonCode.OPERATOR_APPROVAL_REQUIRED,
+                explanation="Undo requires human approval before execution.",
+            ).to_dict(),
+        }
+
+    async def run_approved_revert(
+        self, approval_id: str, *, executor: str | None = None
+    ) -> dict[str, Any]:
+        """Execute exactly one human-approved undo request."""
+        async with self._control_pool.acquire() as control_conn:
+            row = await self._approvals.claim_approved(
+                control_conn, approval_id, action_kind="revert"
+            )
+            if row is None:
+                return {
+                    "ok": False,
+                    "approval_id": approval_id,
+                    "error": "approval is not an approved revert",
+                    "summary": "Interdict did not revert: approval is not ready.",
+                }
+            action_id = str(row["undo_action_id"])
+            async with self._pool.acquire() as target_conn:
+                result = await revert(
+                    target_conn,
+                    action_id,
+                    self._undo_store,
+                    agent=row.get("decided_by") or executor,
+                    require_agent_match=False,
+                    control_conn=(
+                        control_conn if self._control_pool is not self._pool else None
+                    ),
+                    principal_kind=PrincipalKind.HUMAN.value,
+                )
+            await self._approvals.finish_execution(
+                control_conn,
+                approval_id,
+                succeeded=result.ok,
+                failure_reason=result.error,
+            )
         payload = result.to_dict()
-        if result.ok:
-            payload["summary"] = (
-                f"Interdict reverted {action_id}: restored "
-                f"{result.rows_restored} row(s)."
-            )
-            payload["decision"] = SchemaDecision.allow(
-                reason_code=SchemaReasonCode.ALLOW,
-                explanation="Revert executed successfully.",
-            ).to_dict()
-        else:
-            payload["summary"] = (
-                f"Interdict could not revert {action_id}: {result.error}"
-            )
-            payload["decision"] = SchemaDecision.deny(
-                reason_code=SchemaReasonCode.NON_REVERSIBLE_WRITE,
-                explanation=result.error or "Revert failed.",
-                repair_hint="Inspect the undo record and resolve conflicts manually.",
-            ).to_dict()
+        payload.update(
+            {
+                "approval_id": approval_id,
+                "summary": (
+                    f"Interdict reverted {action_id}: restored "
+                    f"{result.rows_restored} row(s)."
+                    if result.ok
+                    else f"Interdict could not revert {action_id}: {result.error}"
+                ),
+            }
+        )
         return payload
+
+    async def revert_write(
+        self, action_id: str, *, agent: str | None = None
+    ) -> dict[str, Any]:
+        """Compatibility alias: requesting a revert no longer executes it."""
+        return await self.request_revert(action_id, agent=agent)
 
     def audit_status(self) -> dict[str, Any]:
         """Expose audit queue health so dropped records are visible."""
@@ -802,7 +1009,13 @@ class AppContext:
     session: ShadowSession
     audit: AuditLog
     pool: asyncpg.Pool
+    control_pool: asyncpg.Pool
     policy: Policy
+
+
+def control_pool_is_separate(app: AppContext) -> bool:
+    """Whether approvals live outside the guarded application database pool."""
+    return app.control_pool is not app.pool
 
 
 def _mcp_actor(ctx: Context) -> str:
@@ -828,20 +1041,45 @@ async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     Policy loading (YAML -> Policy) happens here, once, off the hot path (sec. 4).
     """
     policy = Policy.load(POLICY_PATH)
+
+    async def _init_application_connection(conn) -> None:
+        # Never inherit a role/user-controlled search_path. Qualified names still
+        # work; bare development names resolve only in trusted public.
+        await conn.execute("SET search_path = pg_catalog, public")
+
     pool = await asyncpg.create_pool(
-        dsn=DB_DSN, min_size=POOL_MIN_SIZE, max_size=POOL_MAX_SIZE
+        dsn=DB_DSN,
+        min_size=POOL_MIN_SIZE,
+        max_size=POOL_MAX_SIZE,
+        init=_init_application_connection,
     )
-    audit = AuditLog(AUDIT_LOG_PATH)
+    control_pool = (
+        await asyncpg.create_pool(
+            dsn=CONTROL_DSN, min_size=1, max_size=max(2, POOL_MAX_SIZE // 2)
+        )
+        if CONTROL_DSN
+        else pool
+    )
+    audit = AuditLog(
+        AUDIT_LOG_PATH,
+        control_pool=control_pool if control_pool is not pool else None,
+        control_schema=CONTROL_SCHEMA,
+    )
     await audit.start()
-    undo_store = UndoStore(policy.undo) if policy.undo.enabled else None
-    approval_store = ApprovalStore(policy.undo.schema, ttl_seconds=APPROVAL_TTL_SECONDS)
+    undo_store = (
+        UndoStore(policy.undo, schema=CONTROL_SCHEMA) if policy.undo.enabled else None
+    )
+    approval_store = ApprovalStore(CONTROL_SCHEMA, ttl_seconds=APPROVAL_TTL_SECONDS)
     # Load the unique/PK column metadata once, off the hot path (sec. 4): it lets
     # a point write by a unique key skip simulation while a bulk write on a
     # non-unique column is still simulated. Ensure the approvals table exists in
     # the same round trip (startup-only DDL).
     async with pool.acquire() as conn:
         unique_columns = await load_unique_columns(conn)
+    async with control_pool.acquire() as conn:
         await approval_store.ensure_schema(conn)
+        if undo_store is not None:
+            await undo_store.ensure_schema(conn)
     try:
         yield AppContext(
             session=ShadowSession(
@@ -852,13 +1090,17 @@ async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
                 unique_columns=unique_columns,
                 operator_token=OPERATOR_TOKEN,
                 approval_store=approval_store,
+                control_pool=control_pool,
             ),
             audit=audit,
             pool=pool,
+            control_pool=control_pool,
             policy=policy,
         )
     finally:
         await audit.stop()
+        if control_pool is not pool:
+            await control_pool.close()
         await pool.close()
 
 
@@ -882,7 +1124,7 @@ async def run_query(
     list explaining why and how to fix it -- the database is not touched. If it's
     allowed it runs (a read may come back with an injected LIMIT).
 
-    A risky write may be simulated first to measure its blast radius. If that
+    Every write is measured without executing it first. If its blast radius
     exceeds the confirm threshold the result has ``requires_confirmation=True``
     and a ``simulation`` summary (e.g. "would affect 2.3M rows") and the write is
     held. There is deliberately no agent-facing way to approve it -- an agent
@@ -893,8 +1135,8 @@ async def run_query(
     ``stated_task`` is the agent's description of what it's doing -- captured
     for intent-mismatch detection later (sec. 10); advisory.
 
-    When a write is reversible, the result carries ``undo_action_id`` -- pass it
-    to ``revert_write`` to undo the change.
+    When a write is reversible, the result carries ``undo_action_id``. Pass it
+    to ``request_revert``; a human must approve the undo before it can run.
     """
     app: AppContext = ctx.request_context.lifespan_context
     agent = _mcp_actor(ctx)
@@ -925,23 +1167,31 @@ async def list_pending_approvals(ctx: Context) -> dict[str, Any]:
 
 
 @mcp.tool()
-async def revert_write(
+async def request_revert(
     action_id: str,
     ctx: Context,
-    operator_token: str | None = None,
 ) -> dict[str, Any]:
-    """Undo a previously-executed write by its ``undo_action_id``.
+    """Request human approval to undo a previously executed write.
 
-    Restores the affected rows to their captured before-image (UPDATE values
-    restored in place, DELETEd rows re-inserted, INSERTed rows removed). The
-    revert is itself recorded; a record can only be reverted once. Returns
-    ``{ok, action_id, operation, rows_restored, error}``.
+    This tool never performs the undo. A human approves the returned approval_id
+    out-of-band, then the agent calls ``run_approved_revert``.
     """
     app: AppContext = ctx.request_context.lifespan_context
-    agent = _mcp_actor(ctx)
-    return await app.session.revert_write(
-        action_id, agent=agent, operator_token=operator_token
-    )
+    return await app.session.request_revert(action_id, agent=_mcp_actor(ctx))
+
+
+@mcp.tool()
+async def run_approved_revert(approval_id: str, ctx: Context) -> dict[str, Any]:
+    """Execute an undo only after its human approval was recorded out-of-band."""
+    app: AppContext = ctx.request_context.lifespan_context
+    return await app.session.run_approved_revert(approval_id, executor=_mcp_actor(ctx))
+
+
+@mcp.tool()
+async def revert_write(action_id: str, ctx: Context) -> dict[str, Any]:
+    """Compatibility alias for ``request_revert``; it does not execute undo."""
+    app: AppContext = ctx.request_context.lifespan_context
+    return await app.session.request_revert(action_id, agent=_mcp_actor(ctx))
 
 
 def _package_version() -> str:
@@ -976,6 +1226,8 @@ async def interdict_status(ctx: Context) -> dict[str, Any]:
         "simulation_enabled": policy.simulation.enabled,
         "undo_enabled": policy.undo.enabled,
         "operator_approval_configured": bool(OPERATOR_TOKEN),
+        "safety_profile": SAFETY_PROFILE,
+        "control_store_separate": control_pool_is_separate(app),
         "audit": app.session.audit_status(),
     }
 
@@ -986,6 +1238,12 @@ def _preflight() -> None:
     Runs once at startup (never on the query path). Everything user-facing goes
     to stderr: stdout is the MCP protocol channel and must stay clean.
     """
+    try:
+        profile = validate_profile(SAFETY_PROFILE)
+    except ValueError as exc:
+        print(f"interdict: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
     if "AGENT_DB_DSN" not in os.environ:
         print(
             "interdict: AGENT_DB_DSN is not set; using the dev default "
@@ -1004,12 +1262,32 @@ def _preflight() -> None:
         )
         raise SystemExit(1) from exc
 
-    async def _check_db() -> None:
+    async def _check_db() -> list[str]:
         conn = await asyncpg.connect(dsn=DB_DSN, timeout=5)
-        await conn.close()
+        control_conn = None
+        try:
+            application = await inspect_database_security(conn)
+            control = None
+            if CONTROL_DSN:
+                control_conn = await asyncpg.connect(dsn=CONTROL_DSN, timeout=5)
+                control = await inspect_database_security(control_conn)
+            if profile == PRODUCTION:
+                return production_errors(
+                    policy=Policy.load(POLICY_PATH),
+                    application=application,
+                    control=control,
+                    operator_token=OPERATOR_TOKEN,
+                    operator_id=OPERATOR_ID,
+                    min_token_length=MIN_OPERATOR_TOKEN_LENGTH,
+                )
+            return []
+        finally:
+            if control_conn is not None:
+                await control_conn.close()
+            await conn.close()
 
     try:
-        asyncio.run(_check_db())
+        security_errors = asyncio.run(_check_db())
     except Exception as exc:
         print(
             f"interdict: cannot reach Postgres at {redact_text(DB_DSN)}: {exc}\n"
@@ -1017,6 +1295,17 @@ def _preflight() -> None:
             file=sys.stderr,
         )
         raise SystemExit(1) from exc
+
+    if security_errors:
+        print("interdict: production safety checks failed:", file=sys.stderr)
+        for error in security_errors:
+            print(f"  - {error}", file=sys.stderr)
+        print(
+            "Run `interdict doctor` after configuring a least-privilege "
+            "application role and separate control database.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
 
     if not OPERATOR_TOKEN:
         print(
@@ -1050,6 +1339,9 @@ def _preflight() -> None:
 
 _USAGE = """Usage:
   interdict                     Run the MCP server over stdio (agent-facing)
+  interdict doctor              Check production privilege boundaries
+  interdict init                Print least-privilege setup SQL (does not run it)
+  interdict migrate-control     Copy legacy control records; delete nothing
   interdict pending             List writes held for approval
   interdict approve <id>        Approve a held write (agent then executes it)
   interdict deny <id>           Deny a held write
@@ -1057,7 +1349,10 @@ _USAGE = """Usage:
 
 Environment:
   AGENT_DB_DSN             Postgres DSN to protect
+  AGENT_CONTROL_DSN        Separate Postgres database for approvals/undo metadata
+  AGENT_SAFETY_PROFILE     production (default) or development
   AGENT_OPERATOR_TOKEN     Token required for operator approvals
+  AGENT_OPERATOR_ID        Stable human operator identity (required in production)
   AGENT_POLICY             YAML policy path
   AGENT_AUDIT_LOG          JSONL audit log path
 
@@ -1069,12 +1364,10 @@ run_approved_query(approval_id)."""
 def _operator_cli(argv: list[str]) -> int:
     """Human-side approval commands. Runs in the operator's own terminal."""
     command, args = argv[0], argv[1:]
-    store = ApprovalStore(
-        Policy.load(POLICY_PATH).undo.schema, ttl_seconds=APPROVAL_TTL_SECONDS
-    )
+    store = ApprovalStore(CONTROL_SCHEMA, ttl_seconds=APPROVAL_TTL_SECONDS)
 
     async def _run() -> int:
-        conn = await asyncpg.connect(dsn=DB_DSN, timeout=5)
+        conn = await asyncpg.connect(dsn=CONTROL_DSN or DB_DSN, timeout=5)
         try:
             if command == "pending":
                 rows = await store.list_pending(conn)
@@ -1109,7 +1402,7 @@ def _operator_cli(argv: list[str]) -> int:
                 approval_id,
                 approve=(command == "approve"),
                 operator_token_hash=token_hash(OPERATOR_TOKEN),
-                decided_by=os.environ.get("USER", "operator"),
+                decided_by=OPERATOR_ID or "development-operator",
             )
             if decided is None:
                 print(
@@ -1119,9 +1412,15 @@ def _operator_cli(argv: list[str]) -> int:
                 )
                 return 1
             if decided == APPROVED:
+                row = await store.get(conn, approval_id)
+                tool = (
+                    "run_approved_revert"
+                    if row and row.get("action_kind") == "revert"
+                    else "run_approved_query"
+                )
                 print(
                     f"Approved {approval_id}. The agent can now execute it with "
-                    f'run_approved_query(approval_id="{approval_id}").'
+                    f'{tool}(approval_id="{approval_id}").'
                 )
             else:
                 print(f"Denied {approval_id}. It will not run.")
@@ -1139,6 +1438,145 @@ def _operator_cli(argv: list[str]) -> int:
         return 1
 
 
+def _doctor_cli() -> int:
+    """Human-readable deployment audit; never starts the MCP server."""
+    try:
+        profile = validate_profile(SAFETY_PROFILE)
+        policy = Policy.load(POLICY_PATH)
+
+        async def _run():
+            app_conn = await asyncpg.connect(dsn=DB_DSN, timeout=5)
+            control_conn = None
+            try:
+                application = await inspect_database_security(app_conn)
+                control = None
+                if CONTROL_DSN:
+                    control_conn = await asyncpg.connect(dsn=CONTROL_DSN, timeout=5)
+                    control = await inspect_database_security(control_conn)
+                return application, control
+            finally:
+                if control_conn is not None:
+                    await control_conn.close()
+                await app_conn.close()
+
+        application, control = asyncio.run(_run())
+        print(f"Safety profile: {profile}")
+        print(
+            f"Application: role={application.role} " f"database={application.database}"
+        )
+        print(
+            "Control store: "
+            + (
+                f"role={control.role} database={control.database}"
+                if control is not None
+                else "not configured"
+            )
+        )
+        if profile != PRODUCTION:
+            print("OK for development; this profile is not production-safe.")
+            return 0
+        errors = production_errors(
+            policy=policy,
+            application=application,
+            control=control,
+            operator_token=OPERATOR_TOKEN,
+            operator_id=OPERATOR_ID,
+            min_token_length=MIN_OPERATOR_TOKEN_LENGTH,
+        )
+        if errors:
+            print("FAILED production checks:")
+            for error in errors:
+                print(f"  - {error}")
+            return 1
+        print("PASS: production privilege boundaries are configured.")
+        return 0
+    except Exception as exc:
+        print(f"interdict doctor: {exc}", file=sys.stderr)
+        return 1
+
+
+def _init_cli() -> int:
+    """Print a reviewable psql template; never mutate a database."""
+
+    def ident(value: str) -> str:
+        return '"' + value.replace('"', '""') + '"'
+
+    policy = Policy.load(POLICY_PATH)
+    tables = sorted(policy.allowed_tables or [])
+    print("-- Review and run this in the APPLICATION database as an administrator.")
+    print("\\prompt 'Password for interdict_app: ' interdict_app_password")
+    print(
+        "CREATE ROLE interdict_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+        "NOREPLICATION NOBYPASSRLS PASSWORD :'interdict_app_password';"
+    )
+    schemas = sorted({table.split(".", 1)[0] for table in tables if "." in table})
+    for schema in schemas:
+        print(
+            f"-- Ensure PUBLIC cannot grant inherited CREATE on {ident(schema)}; "
+            "review impact on other roles."
+        )
+        print(f"REVOKE CREATE ON SCHEMA {ident(schema)} FROM PUBLIC;")
+        print(f"GRANT USAGE ON SCHEMA {ident(schema)} TO interdict_app;")
+    for table in tables:
+        if "." not in table:
+            print(f"-- SKIPPED unqualified allowlist entry: {table}")
+            continue
+        schema, relation = table.split(".", 1)
+        print(
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON "
+            f"{ident(schema)}.{ident(relation)} "
+            "TO interdict_app;"
+        )
+    for reserved in ("adb_undo", "interdict_control"):
+        print(
+            "DO $$ BEGIN IF to_regnamespace(" + repr(reserved) + ") IS NOT NULL "
+            "THEN EXECUTE 'REVOKE ALL ON SCHEMA "
+            + ident(reserved)
+            + " FROM interdict_app'; END IF; END $$;"
+        )
+    print()
+    print("-- Run this section as an administrator for the CONTROL database.")
+    print("-- The control database and role must differ from the application ones.")
+    print("\\prompt 'Password for interdict_control: ' interdict_control_password")
+    print(
+        "CREATE ROLE interdict_control LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+        "NOREPLICATION NOBYPASSRLS PASSWORD :'interdict_control_password';"
+    )
+    print("CREATE SCHEMA interdict_control AUTHORIZATION interdict_control;")
+    print("REVOKE ALL ON SCHEMA interdict_control FROM PUBLIC;")
+    print("-- Interdict never executes this output automatically.")
+    return 0
+
+
+def _migrate_control_cli() -> int:
+    if not CONTROL_DSN:
+        print("interdict: AGENT_CONTROL_DSN is required", file=sys.stderr)
+        return 2
+
+    async def _run() -> dict[str, int]:
+        app = await asyncpg.connect(DB_DSN, timeout=5)
+        control = await asyncpg.connect(CONTROL_DSN, timeout=5)
+        try:
+            return await migrate_legacy_control(
+                app, control, destination_schema=CONTROL_SCHEMA
+            )
+        finally:
+            await app.close()
+            await control.close()
+
+    try:
+        copied = asyncio.run(_run())
+    except Exception as exc:
+        print(f"interdict migrate-control: {exc}", file=sys.stderr)
+        return 1
+    print(
+        f"Copied {copied['approvals']} approval(s) and "
+        f"{copied['undo_records']} undo record(s)."
+    )
+    print("The legacy adb_undo schema was not modified or deleted.")
+    return 0
+
+
 def main() -> None:
     """Entry point: run the MCP server over stdio (the standard MCP transport)."""
     argv = sys.argv[1:]
@@ -1148,6 +1586,12 @@ def main() -> None:
     if "--version" in argv:
         print(f"interdict {_package_version()}")
         return
+    if argv and argv[0] == "doctor":
+        raise SystemExit(_doctor_cli())
+    if argv and argv[0] == "init":
+        raise SystemExit(_init_cli())
+    if argv and argv[0] == "migrate-control":
+        raise SystemExit(_migrate_control_cli())
     if argv and argv[0] in {"pending", "approve", "deny"}:
         raise SystemExit(_operator_cli(argv))
     if argv:

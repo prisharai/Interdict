@@ -146,6 +146,8 @@ class UndoConfig:
     schema: str = "adb_undo"
     block_non_reversible: bool = True
     require_agent_match: bool = True
+    max_capture_rows: int = 10_000
+    max_capture_bytes: int = 16 * 1024 * 1024
 
     @classmethod
     def from_dict(cls, data: dict | None) -> UndoConfig:
@@ -155,6 +157,8 @@ class UndoConfig:
             schema=data.get("schema", "adb_undo"),
             block_non_reversible=bool(data.get("block_non_reversible", True)),
             require_agent_match=bool(data.get("require_agent_match", True)),
+            max_capture_rows=int(data.get("max_capture_rows", 10_000)),
+            max_capture_bytes=int(data.get("max_capture_bytes", 16 * 1024 * 1024)),
         )
 
 
@@ -267,13 +271,14 @@ def _plan(sql: str, classification: Classification) -> tuple[_Plan | None, str |
 
 
 class UndoStore:
-    """The sidecar undo log (a table in the target DB) + small schema cache."""
+    """Undo evidence stored in the control database plus target metadata cache."""
 
-    def __init__(self, config: UndoConfig) -> None:
-        self._schema = config.schema
+    def __init__(self, config: UndoConfig, *, schema: str | None = None) -> None:
+        self._schema = schema or config.schema
         self._ensured = False
         self._pk: dict[str, list[str]] = {}
         self._cols: dict[str, list[str]] = {}
+        self._safety: dict[str, tuple[str, ...]] = {}
 
     @property
     def _log(self) -> str:
@@ -327,6 +332,20 @@ class UndoStore:
             conn,
             f"ALTER TABLE {self._log} ADD COLUMN IF NOT EXISTS reverted_by jsonb",
         )
+        await _execute_tolerating_duplicates(
+            conn,
+            f"ALTER TABLE {self._log} " "ADD COLUMN IF NOT EXISTS failure_reason text",
+        )
+        # v0.2 briefly used a prepared->active finalization after the target
+        # commit. Promote any surviving records: a false-positive active record
+        # is harmless because revert verifies the target's exact after-state,
+        # while a committed write with hidden evidence is not harmless.
+        await conn.execute(
+            f"UPDATE {self._log} SET status='active', "
+            "failure_reason=coalesce(failure_reason, "
+            "'recovered prepared evidence; target commit may be uncertain') "
+            "WHERE status='prepared'"
+        )
         self._ensured = True
 
     async def primary_key(self, conn, table: str) -> list[str]:
@@ -338,6 +357,32 @@ class UndoStore:
         if table not in self._cols:
             self._cols[table] = [r[0] for r in await conn.fetch(_COLS_SQL, table)]
         return self._cols[table]
+
+    async def safety_issues(self, conn, table: str) -> tuple[str, ...]:
+        """Out-of-row effects that before-image undo cannot safely reverse."""
+        if table not in self._safety:
+            row = await conn.fetchrow(
+                """
+                SELECT EXISTS (
+                         SELECT 1 FROM pg_trigger
+                         WHERE tgrelid=$1::regclass AND NOT tgisinternal
+                       ) AS user_triggers,
+                       EXISTS (
+                         SELECT 1 FROM pg_constraint
+                         WHERE confrelid=$1::regclass AND contype='f'
+                           AND (confdeltype IN ('c','n','d')
+                                OR confupdtype IN ('c','n','d'))
+                       ) AS cascading_fks
+                """,
+                table,
+            )
+            issues: list[str] = []
+            if row["user_triggers"]:
+                issues.append("target table has user-defined triggers")
+            if row["cascading_fks"]:
+                issues.append("target table has cascading foreign-key actions")
+            self._safety[table] = tuple(issues)
+        return self._safety[table]
 
     async def record(
         self,
@@ -353,13 +398,14 @@ class UndoStore:
         row_count,
         before_images,
         after_images,
+        status="active",
     ) -> None:
         await conn.execute(
             f"""INSERT INTO {self._log}
                 (action_id, agent, stated_task, principal, target_table, operation,
-                 pk_columns, row_count, before_images, after_images)
+                 pk_columns, row_count, before_images, after_images, status)
                 VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8,
-                        $9::jsonb, $10::jsonb)""",
+                        $9::jsonb, $10::jsonb, $11)""",
             action_id,
             agent,
             stated_task,
@@ -370,6 +416,7 @@ class UndoStore:
             row_count,
             before_images,
             after_images,
+            status,
         )
 
     async def get(self, conn, action_id) -> dict | None:
@@ -420,6 +467,7 @@ async def execute_with_undo(
     stated_task: str | None,
     config: UndoConfig,
     store: UndoStore,
+    control_conn=None,
 ) -> UndoOutcome:
     """Execute a write, capturing before/after images so it can be reverted.
 
@@ -442,7 +490,21 @@ async def execute_with_undo(
         status, rows, error = await _plain_execute(conn, sql)
         return UndoOutcome(status, rows, error, None, reversible=False, reason=reason)
 
-    await store.ensure_schema(conn)
+    issues = await store.safety_issues(conn, plan.target)
+    if issues and config.block_non_reversible:
+        return UndoOutcome(
+            None,
+            [],
+            None,
+            None,
+            reversible=False,
+            reason="; ".join(issues),
+            blocked=True,
+        )
+
+    evidence_conn = control_conn or conn
+    external_evidence = evidence_conn is not conn
+    await store.ensure_schema(evidence_conn)
     pk = await store.primary_key(conn, plan.target)
     if plan.operation in ("update", "insert") and not pk:
         reason = "target has no primary key"
@@ -492,6 +554,7 @@ async def execute_with_undo(
     principal = principal_from_legacy(agent, stated_task=stated_task).to_dict()
     tr = conn.transaction()
     await tr.start()
+    evidence_stored = False
     try:
         if plan.operation == "update":
             before = await conn.fetchval(plan.before_capture_sql)  # old rows (locked)
@@ -510,8 +573,19 @@ async def execute_with_undo(
             before = "[]"
             row_count = len(json.loads(after))
             status = f"INSERT 0 {row_count}"
+        capture_bytes = len(before.encode("utf-8")) + len(after.encode("utf-8"))
+        if row_count > config.max_capture_rows:
+            raise ValueError(
+                f"undo capture row limit exceeded ({row_count} > "
+                f"{config.max_capture_rows})"
+            )
+        if capture_bytes > config.max_capture_bytes:
+            raise ValueError(
+                f"undo capture byte limit exceeded ({capture_bytes} > "
+                f"{config.max_capture_bytes})"
+            )
         await store.record(
-            conn,
+            evidence_conn,
             action_id=action_id,
             agent=agent,
             stated_task=stated_task,
@@ -522,7 +596,12 @@ async def execute_with_undo(
             row_count=row_count,
             before_images=before,
             after_images=after,
+            # With an external control DB, evidence must be usable before the
+            # target commit. If the target later rolls back, conditional undo
+            # sees that its exact after-state is absent and changes nothing.
+            status="active",
         )
+        evidence_stored = external_evidence
         await tr.commit()
     except Exception as exc:
         await _rollback_quietly(tr)
@@ -530,9 +609,13 @@ async def execute_with_undo(
             None,
             [],
             client_db_error(exc),
-            None,
-            reversible=False,
-            reason="execution failed",
+            str(action_id) if evidence_stored else None,
+            reversible=evidence_stored,
+            reason=(
+                "target outcome is uncertain; durable evidence is available"
+                if evidence_stored
+                else "execution failed"
+            ),
         )
 
     return UndoOutcome(
@@ -585,13 +668,16 @@ async def revert(
     *,
     agent: str | None = None,
     require_agent_match: bool = False,
+    control_conn=None,
+    principal_kind: str = PrincipalKind.AGENT.value,
 ) -> RevertResult:
     """Reverse a recorded write by its action id. Conditional and atomic.
 
     Restores only if every affected row still matches the write's after-state;
     otherwise nothing is changed and a conflict is reported.
     """
-    rec = await store.get(conn, action_id)
+    evidence_conn = control_conn or conn
+    rec = await store.get(evidence_conn, action_id)
     if rec is None:
         return RevertResult(False, action_id, error="no such action_id")
     if rec["status"] == "reverted":
@@ -622,7 +708,7 @@ async def revert(
         if op == "update"
         else (rec["after_images"],) if op == "insert" else (rec["before_images"],)
     )
-    reverted_by = principal_from_legacy(agent, kind=PrincipalKind.AGENT.value).to_dict()
+    reverted_by = principal_from_legacy(agent, kind=principal_kind).to_dict()
 
     tr = conn.transaction()
     await tr.start()
@@ -642,8 +728,14 @@ async def revert(
                     "changed since the write; manual resolution required"
                 ),
             )
-        await store.mark_reverted(conn, action_id, reverted_by)
+        if evidence_conn is conn:
+            await store.mark_reverted(evidence_conn, action_id, reverted_by)
         await tr.commit()
+        if evidence_conn is not conn:
+            # With a separate control database this update cannot be part of
+            # the target transaction. The human gate makes retries explicit;
+            # mark evidence only after the inverse statement has committed.
+            await store.mark_reverted(evidence_conn, action_id, reverted_by)
     except Exception as exc:
         await _rollback_quietly(tr)
         return RevertResult(

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
+from hashlib import sha256
 from pathlib import Path
 
 import yaml
@@ -43,6 +44,7 @@ class ReasonCode:
     WRITE_WITHOUT_WHERE = "WRITE_WITHOUT_WHERE"
     MULTI_STATEMENT = "MULTI_STATEMENT"
     SYSTEM_CATALOG = "SYSTEM_CATALOG_ACCESS"
+    CONTROL_PLANE = "CONTROL_PLANE_ACCESS"
     TABLE_NOT_ALLOWED = "TABLE_NOT_ALLOWED"
     DDL_NOT_ALLOWED = "DDL_NOT_ALLOWED"
     COLUMN_BLOCKED = "COLUMN_BLOCKED"
@@ -80,11 +82,24 @@ _DEFAULT_BLOCKED_FUNCTIONS = frozenset(
 # Whole families blocked by name prefix.
 _BLOCKED_FUNCTION_PREFIXES = ("lo_", "dblink", "pg_advisory")
 
+# These namespaces contain the approvals and undo evidence that make Interdict
+# trustworthy.  They are not ordinary policy data: an agent may never touch
+# them, even in observe mode or under a permissive table policy.  Keep the
+# legacy name reserved so upgrading cannot expose old security records.
+RESERVED_SCHEMAS = frozenset({"adb_undo", "interdict_control"})
+
 
 def _is_blocked_function(name: str, policy: Policy) -> bool:
-    return name in policy.blocked_functions or name.startswith(
+    bare = name.rsplit(".", 1)[-1]
+    return bare in policy.blocked_functions or bare.startswith(
         _BLOCKED_FUNCTION_PREFIXES
     )
+
+
+def _reserved_schema(name: str) -> str | None:
+    """Return the protected schema named by a relation/function, if any."""
+    schema, dot, _object = name.lower().partition(".")
+    return schema if dot and schema in RESERVED_SCHEMAS else None
 
 
 @dataclass(frozen=True)
@@ -179,6 +194,7 @@ class Policy:
     # columns -- or a star select over such a table -- is blocked.
     blocked_columns: dict[str, frozenset[str]] = field(default_factory=dict)
     blocked_functions: frozenset[str] = _DEFAULT_BLOCKED_FUNCTIONS
+    require_qualified_tables: bool = False
     simulation: SimulationConfig = field(default_factory=SimulationConfig)
     undo: UndoConfig = field(default_factory=UndoConfig)
     intent: IntentConfig = field(default_factory=IntentConfig)
@@ -222,6 +238,7 @@ class Policy:
             ),
             blocked_columns=blocked_columns,
             blocked_functions=blocked_functions,
+            require_qualified_tables=bool(data.get("require_qualified_tables", False)),
             simulation=SimulationConfig.from_dict(data.get("simulation")),
             undo=UndoConfig.from_dict(data.get("undo")),
             intent=IntentConfig.from_dict(data.get("intent")),
@@ -371,6 +388,27 @@ def evaluate(sql: str, classification: Classification, policy: Policy) -> Decisi
     for stmt in classification.statements:
         idx = stmt.index
 
+        # This check is deliberately unconditional.  Policy authors can tune
+        # application access, but cannot grant an agent access to the lockbox
+        # that stores Interdict approvals and undo evidence.
+        protected = sorted(
+            {
+                schema
+                for name in (*stmt.tables, *stmt.functions)
+                if (schema := _reserved_schema(name)) is not None
+            }
+        )
+        for schema in protected:
+            violations.append(
+                Violation(
+                    ReasonCode.CONTROL_PLANE,
+                    f"Schema '{schema}' is reserved for Interdict security records.",
+                    "Use an application table; control-plane records are never "
+                    "available to an agent.",
+                    idx,
+                )
+            )
+
         # A write wrapped inside a non-write top node (data-modifying CTE,
         # EXPLAIN ANALYZE <write>, ...) can hide or even execute the write while
         # looking like a read. Block it deterministically -- independent of
@@ -422,6 +460,18 @@ def evaluate(sql: str, classification: Classification, policy: Policy) -> Decisi
             )
 
         # Default-deny table allowlist.
+        if policy.require_qualified_tables:
+            for table in stmt.tables:
+                if "." not in table:
+                    violations.append(
+                        Violation(
+                            ReasonCode.TABLE_NOT_ALLOWED,
+                            f"Table '{table}' must be schema-qualified in this policy.",
+                            "Use schema.table so Postgres cannot resolve a "
+                            "different object.",
+                            idx,
+                        )
+                    )
         if policy.allowed_tables is not None:
             for table in stmt.tables:
                 if _normalize_table(table) not in policy.allowed_tables:
@@ -518,7 +568,7 @@ def apply_blast_radius(
     sim = result.to_dict()
     rows = result.affected_rows
 
-    # If the precise/counting path timed out, the blast radius is not bounded.
+    # If the read-only counting path timed out, the blast radius is not bounded.
     # Hold for confirmation even if a planner estimate happens to be present.
     if result.timed_out and result.exact_rows is None:
         return replace(decision, simulation=sim, requires_confirmation=True)
@@ -566,6 +616,52 @@ def apply_blast_radius(
         config.confirm_over_rows is not None and rows > config.confirm_over_rows
     )
     return replace(decision, simulation=sim, requires_confirmation=needs_confirmation)
+
+
+def apply_undo_capture_limit(decision: Decision, config: UndoConfig) -> Decision:
+    """Deny a measured write that would overflow the undo evidence budget."""
+    if not decision.allowed or not decision.simulation:
+        return decision
+    rows = decision.simulation.get("affected_rows")
+    if isinstance(rows, int) and rows > config.max_capture_rows:
+        violation = Violation(
+            ReasonCode.NON_REVERSIBLE_WRITE,
+            f"Write would capture {rows} rows, over the undo limit of "
+            f"{config.max_capture_rows}.",
+            "Narrow the write or raise the limit only after reviewing control "
+            "storage capacity.",
+        )
+        return replace(
+            decision,
+            allowed=False,
+            violations=decision.violations + (violation,),
+        )
+    return decision
+
+
+def apply_approval_ceiling(decision: Decision, approved_rows: int | None) -> Decision:
+    """Invalidate an approval when fresh impact is larger than what was shown."""
+    if approved_rows is None or not decision.allowed or not decision.simulation:
+        return decision
+    rows = decision.simulation.get("affected_rows")
+    if not isinstance(rows, int) or rows <= approved_rows:
+        return decision
+    violation = Violation(
+        ReasonCode.BLAST_RADIUS_EXCEEDED,
+        f"Fresh measurement is {rows} rows, above the {approved_rows} rows approved.",
+        "Request a new approval using the fresh blast-radius measurement.",
+    )
+    return replace(
+        decision,
+        allowed=False,
+        requires_confirmation=False,
+        violations=decision.violations + (violation,),
+    )
+
+
+def policy_fingerprint(policy: Policy) -> str:
+    """Stable fingerprint used to bind a hold to the policy that produced it."""
+    return sha256(repr(policy).encode("utf-8")).hexdigest()
 
 
 def apply_intent(

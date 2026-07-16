@@ -1,9 +1,7 @@
-"""Day 4 tests: blast-radius simulation (needs Postgres).
+"""Blast-radius measurement tests (needs Postgres).
 
-Verifies exact affected-row counts via BEGIN/ROLLBACK (and that the rollback
-really leaves the table untouched), the cheap EXPLAIN-estimate path, hard
-time-boxing with clean abort, and the gate that keeps simulation off reads and
-routine traffic. Skips cleanly when the dev DB isn't up.
+Writes are never executed merely to preview them. UPDATE/DELETE use a safe
+counting query; INSERT VALUES is counted from the AST.
 """
 
 import os
@@ -85,22 +83,20 @@ async def test_reads_are_not_simulated(conn):
     assert r.method == "skipped"
 
 
-# --- Exact counts + rollback safety ------------------------------------------
+# --- Exact non-mutating counts ------------------------------------------------
 
 
-async def test_exact_affected_rows_and_rollback_leaves_table_untouched(conn):
-    # Scratch table with no FKs so the DELETE is clean; proves exact count and
-    # that the rollback restores the table.
+async def test_exact_affected_rows_without_executing_delete(conn):
     await conn.execute("DROP TABLE IF EXISTS _sim_del_scratch")
     await conn.execute("CREATE TABLE _sim_del_scratch (id int)")
     await conn.execute("INSERT INTO _sim_del_scratch SELECT generate_series(1, 20)")
     try:
         sql = "DELETE FROM _sim_del_scratch WHERE id <= 9"
         r = await simulate(conn, sql, classify(sql), ON)
-        assert r.method == "precise"
+        assert r.method == "count"
         assert r.exact_rows == 9  # measured the real blast radius
         assert r.affected_rows == 9
-        # ...and the DELETE was rolled back -- the table is unchanged.
+        # The DELETE never ran -- the table is unchanged.
         assert await conn.fetchval("SELECT count(*) FROM _sim_del_scratch") == 20
     finally:
         await conn.execute("DROP TABLE IF EXISTS _sim_del_scratch")
@@ -113,18 +109,15 @@ async def test_update_exact_count(conn):
     assert r.exact_rows == expected
 
 
-async def test_simulation_surfaces_constraint_violation(conn):
-    # Honest bonus: the precise path executes before rolling back, so it also
-    # reveals a write that WOULD fail -- here a DELETE blocked by a foreign key.
+async def test_measurement_does_not_fire_foreign_key_action(conn):
     sql = "DELETE FROM rental WHERE rental_id < 10"
     r = await simulate(conn, sql, classify(sql), ON)
-    assert r.exact_rows is None
-    assert r.error is not None and "ForeignKeyViolation" in r.error
-    # connection remains usable after the rolled-back failure
+    assert r.method == "count"
+    assert r.exact_rows is not None
     assert await conn.fetchval("SELECT 1") == 1
 
 
-# --- Estimate-only path (no execution, no locks) -----------------------------
+# --- The legacy precise flag never permits write execution -------------------
 
 
 async def test_estimate_only_mode(conn):
@@ -132,9 +125,49 @@ async def test_estimate_only_mode(conn):
     r = await simulate(
         conn, sql, classify(sql), SimulationConfig(enabled=True, precise=False)
     )
-    assert r.method == "estimate"
-    assert r.exact_rows is None  # never executed
+    assert r.method == "count"
+    assert r.exact_rows is not None
     assert r.estimated_rows is not None and r.estimated_cost is not None
+
+
+async def test_insert_values_counted_statically(conn):
+    sql = "INSERT INTO category (name) VALUES ('x'), ('y'), ('z')"
+    r = await simulate(conn, sql, classify(sql), ON)
+    assert r.method == "static"
+    assert r.exact_rows == 3
+
+
+async def test_insert_select_is_not_guessed(conn):
+    sql = "INSERT INTO category (name) SELECT title FROM film"
+    r = await simulate(conn, sql, classify(sql), ON)
+    assert r.method == "unsupported"
+    assert r.affected_rows is None
+
+
+async def test_preview_does_not_fire_user_trigger(conn):
+    await conn.execute("DROP TABLE IF EXISTS _preview_target, _preview_effects")
+    await conn.execute("CREATE TABLE _preview_target (id int primary key)")
+    await conn.execute("CREATE TABLE _preview_effects (n int)")
+    await conn.execute("INSERT INTO _preview_target SELECT generate_series(1, 5)")
+    await conn.execute("INSERT INTO _preview_effects VALUES (0)")
+    await conn.execute(
+        """CREATE FUNCTION _preview_trigger() RETURNS trigger AS $$
+        BEGIN UPDATE _preview_effects SET n=n+1; RETURN OLD; END
+        $$ LANGUAGE plpgsql"""
+    )
+    await conn.execute(
+        "CREATE TRIGGER _preview_user_trigger BEFORE DELETE ON _preview_target "
+        "FOR EACH ROW EXECUTE FUNCTION _preview_trigger()"
+    )
+    try:
+        sql = "DELETE FROM _preview_target WHERE id <= 3"
+        result = await simulate(conn, sql, classify(sql), ON)
+        assert result.exact_rows == 3
+        assert await conn.fetchval("SELECT n FROM _preview_effects") == 0
+        assert await conn.fetchval("SELECT count(*) FROM _preview_target") == 5
+    finally:
+        await conn.execute("DROP TABLE _preview_target, _preview_effects CASCADE")
+        await conn.execute("DROP FUNCTION _preview_trigger()")
 
 
 # --- Time-boxing aborts cleanly ----------------------------------------------

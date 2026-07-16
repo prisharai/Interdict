@@ -1,6 +1,6 @@
 [project]
 name = "interdict-db"
-version = "0.1.0"
+version = "0.2.0"
 description = "Runtime safety layer for AI agents touching Postgres."
 readme = "README.md"
 requires-python = ">=3.11"

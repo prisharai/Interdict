@@ -6,7 +6,7 @@
     <title>Interdict — the safety layer between AI agents and your database</title>
     <meta
       name="description"
-      content="Interdict measures the blast radius of every risky agent write before it runs, holds it for human approval, and makes every allowed write undoable with one command."
+      content="Interdict measures every agent database write without executing it, holds high-impact changes for human approval, and records supported writes for human-gated undo."
     />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -64,7 +64,16 @@
         </div>
 
         <div class="hero-stage" aria-hidden="false">
-          <img class="hero-image" src="ref-image.jpeg" alt="Terminal showing Interdict blocking, holding, approving and undoing an agent write" />
+          <div class="hero-glow" aria-hidden="true"></div>
+          <div class="terminal hero-terminal reveal" role="img" aria-label="Chat with an agent that just deleted a database, asking &quot;did you just delete my database?&quot;">
+            <div class="terminal-bar">
+              <span class="dots"><i></i><i></i><i></i></span>
+              <span class="terminal-title">you ↔ agent</span>
+            </div>
+            <div class="hero-image-frame">
+              <img class="hero-image" src="ref-image.jpeg" alt="Chat with an agent that just deleted a database, asking &quot;did you just delete my database?&quot;" />
+            </div>
+          </div>
         </div>
       </section>
 
@@ -143,7 +152,7 @@
           <div class="lifecycle-scene" id="lifecycleScene">
             <div class="lifecycle-heads">
               <h2 class="giant life-head head-a is-active">Measure, hold, approve, undo.</h2>
-              <h2 class="giant life-head head-b">Without ever leaving the chat.</h2>
+              <h2 class="giant life-head head-b">With approval kept outside the chat.</h2>
             </div>
             <div class="life-diagram">
               <span class="life-line" aria-hidden="true"><span class="life-line-fill"></span></span>
@@ -189,7 +198,7 @@
                 <div class="life-card left">
                   <span class="life-badge good">reverted</span>
                   <code>revert 3811adb4</code>
-                  <small>2,300,000 rows restored — one command, fully audited</small>
+                  <small>revert approved by a human — fully audited</small>
                 </div>
               </div>
             </div>
@@ -214,7 +223,7 @@
             <span>dangerous statements missed<br />(red corpus)</span>
           </div>
           <div class="stat">
-            <b>321</b>
+            <b>370</b>
             <span>automated tests<br />in the suite</span>
           </div>
         </div>
@@ -261,9 +270,9 @@
             <ul>
               <li>Full safety engine — nothing crippled</li>
               <li>Blast-radius simulation on risky writes</li>
-              <li>One-command undo with audit trail</li>
+              <li>Human-gated undo with audit trail</li>
               <li>Deterministic YAML policy engine</li>
-              <li>Terminal approvals &amp; local audit log</li>
+              <li>Separate control store &amp; durable audit log</li>
             </ul>
             <a
               class="price-cta ghost"

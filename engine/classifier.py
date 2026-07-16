@@ -124,7 +124,9 @@ class StatementInfo:
     nested_dml: bool  # a write hidden under a non-write top node
     touches_system_catalog: bool
     has_locking: bool  # SELECT ... FOR UPDATE/SHARE/NO KEY UPDATE (takes locks)
-    functions: tuple[str, ...]  # bare lower-cased function names called
+    functions: tuple[
+        str, ...
+    ]  # lower-cased function names, schema-qualified when given
     point_write: bool  # UPDATE/DELETE whose WHERE is a single `col = value`
     point_write_column: str | None  # "table.column" of that equality (uniqueness TBD)
 
@@ -237,12 +239,13 @@ class _Walk(Visitor):
         self.has_locking = True
 
     def visit_FuncCall(self, _ancestors, node):
-        # Record the bare (last-component) function name, lower-cased, so the
-        # policy can deny unsafe functions (pg_sleep, dblink_exec, ...).
+        # Preserve an explicit schema qualifier.  Interdict's own schemas are a
+        # hard trust boundary, so ``interdict_control.some_function()`` must not
+        # be reduced to an innocent-looking bare function name.
         if node.funcname:
-            last = getattr(node.funcname[-1], "sval", None)
-            if last:
-                self.functions.add(last.lower())
+            parts = [getattr(part, "sval", None) for part in node.funcname]
+            if parts and all(parts):
+                self.functions.add(".".join(parts).lower())
 
     def visit_DropStmt(self, _ancestors, node):
         # DROP of a relation carries its target(s) in ``objects`` (name lists),

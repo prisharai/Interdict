@@ -89,7 +89,7 @@ async def test_full_table_write_requires_confirmation(sess):
     assert proposal_decision.impact.rows_affected == 1000
     # blast radius is measured and surfaced for the UI
     assert prop.blast_radius == 1000
-    assert prop.blast_method == "precise"
+    assert prop.blast_method == "count"
 
     # Without confirmation, nothing runs and the table is untouched.
     refused = await sess.execute(prop)

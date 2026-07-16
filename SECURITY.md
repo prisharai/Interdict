@@ -3,6 +3,26 @@
 We take the security of Interdict seriously. Thank you for helping keep the
 project and its users safe.
 
+## Production Security Boundary
+
+Interdict is one layer in a defense-in-depth deployment. In production:
+
+- Connect `AGENT_DB_DSN` with a non-owner, non-superuser role limited to the
+  schema-qualified tables in `tables.allow`.
+- Put approvals, undo evidence, and durable audit events behind a separate role
+  and database in `AGENT_CONTROL_DSN`. The application role must have no access
+  to `adb_undo` or `interdict_control`.
+- Keep the operator token outside agent prompts and transcripts. Approve from a
+  human-controlled terminal and use a stable `AGENT_OPERATOR_ID`.
+- Do not expose raw Postgres credentials, infrastructure-admin credentials, or
+  an unguarded SQL tool to the agent.
+- Maintain tested point-in-time recovery and immutable/off-volume backups.
+  Interdict's undo records are not a disaster-recovery substitute.
+
+Run `interdict doctor` before startup. The default production profile refuses
+to run with an overpowered application role, observe mode, an unqualified or
+missing table allowlist, or a missing separate control store.
+
 ## Reporting a Vulnerability
 
 **Please do not report security vulnerabilities through public GitHub issues,

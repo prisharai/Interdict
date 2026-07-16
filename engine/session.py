@@ -89,7 +89,7 @@ class Proposal:
     classification: Classification
     decision: Decision | None
     blast_radius: int | None  # affected rows (exact if measured, else estimate)
-    blast_method: str | None  # "precise" | "estimate" | "unsupported" | None
+    blast_method: str | None  # "count" | "bounded" | "static" | "unsupported" | None
     blast_timed_out: bool
     violations: tuple[dict, ...]
     stated_task: str | None

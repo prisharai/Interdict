@@ -1,20 +1,11 @@
-"""Blast-radius simulation (differentiator #1).
+"""Non-mutating blast-radius measurement for writes.
 
-OFF the normal request path. Only flagged *risky writes* are simulated, never
-reads or routine traffic (CLAUDE.md sec. 4, Day 4). Two paths:
-
-* **Cheap (estimate):** ``EXPLAIN (FORMAT JSON) <stmt>`` -- the planner's row /
-  cost estimate. No execution, no row locks. Always run when simulation is on.
-* **Precise (exact):** ``BEGIN; SET LOCAL statement_timeout/lock_timeout;
-  <stmt>; ROLLBACK``. Actually executes the write to read the exact affected-row
-  count off the command tag, then rolls it back. This takes locks, so it is
-  strictly gated, time-boxed, and aborts cleanly.
-
-Honest caveats (sec. 11): the precise path *executes* the statement before
-rolling back, so side effects that don't roll back still happen -- sequence
-increments (``nextval`` is not reclaimed on rollback), triggers that call
-external services, ``NOTIFY``, etc. It also briefly holds the same locks the real
-write would. That's why it is opt-in and only ever runs on a flagged risky write.
+Every write is measured before execution. INSERT ... VALUES is counted from the
+AST, primary-key equality is bounded to one row, and simple UPDATE/DELETE uses a
+read-only ``SELECT count(*)`` over the same target predicate. EXPLAIN supplies a
+secondary planner estimate. The proposed write is never executed for preview,
+so preview cannot fire user triggers, advance sequences, or contact an external
+service. Shapes that cannot be translated safely fail closed as unsupported.
 """
 
 from __future__ import annotations
@@ -23,6 +14,8 @@ import json
 from dataclasses import dataclass
 
 from asyncpg.exceptions import LockNotAvailableError, QueryCanceledError
+from pglast import parse_sql
+from pglast.stream import RawStream
 
 from engine.classifier import WRITE, Classification
 
@@ -32,8 +25,9 @@ class SimulationConfig:
     """When and how to simulate. Default OFF -- simulation is opt-in (sec. 4)."""
 
     enabled: bool = False
-    precise: bool = True  # also run BEGIN/ROLLBACK for an exact count
-    statement_timeout_ms: int = 1000  # hard cap on the precise run
+    # Deprecated compatibility field. Measurement is always non-mutating.
+    precise: bool = True
+    statement_timeout_ms: int = 1000  # hard cap on planning/counting
     lock_timeout_ms: int = 200  # don't wait on contended locks
     block_over_rows: int | None = None  # block if blast radius exceeds this
     confirm_over_rows: int | None = None  # require confirmation above this
@@ -55,7 +49,7 @@ class SimulationConfig:
 class SimulationResult:
     """What a simulation learned about a statement's blast radius."""
 
-    method: str  # "precise" | "estimate" | "skipped"
+    method: str  # "count" | "bounded" | "static" | "unsupported" | "skipped"
     estimated_rows: int | None = None
     estimated_cost: float | None = None
     exact_rows: int | None = None
@@ -83,15 +77,13 @@ class SimulationResult:
 
 _SKIPPED = SimulationResult(method="skipped")
 
-# Statement shapes worth simulating: bulk-mutating writes whose blast radius is
-# not obvious from the text. INSERT (you know what you're inserting) and scoped
-# point writes (UPDATE/DELETE ... WHERE col = value) are routine -> not simulated.
+# Statement shapes whose affected rows need a database count.
 _RISKY_WRITE_STMTS = {"UpdateStmt", "DeleteStmt", "MergeStmt"}
 
 # Single-column unique / primary-key columns of every table, e.g. "film.film_id".
 # A point write is only "routine" when scoped to one of these.
 _UNIQUE_COLS_SQL = """
-SELECT c.relname || '.' || a.attname
+SELECT n.nspname || '.' || c.relname || '.' || a.attname
 FROM pg_index i
 JOIN pg_class c ON c.oid = i.indrelid
 JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -104,7 +96,13 @@ WHERE i.indisunique
 
 async def load_unique_columns(conn) -> frozenset[str]:
     """Load ``table.column`` for every single-column unique/PK index (startup only)."""
-    return frozenset(r[0] for r in await conn.fetch(_UNIQUE_COLS_SQL))
+    qualified = {r[0] for r in await conn.fetch(_UNIQUE_COLS_SQL)}
+    # Development compatibility: public.x is also reachable as bare x under
+    # the pinned trusted search_path. Production policies require qualification.
+    bare_public = {
+        name.removeprefix("public.") for name in qualified if name.startswith("public.")
+    }
+    return frozenset(qualified | bare_public)
 
 
 def is_risky_write(
@@ -131,14 +129,6 @@ def is_risky_write(
         # Routine only if scoped to a known-unique column; otherwise risky.
         return not (s.point_write and s.point_write_column in unique_columns)
     return False
-
-
-def _rows_from_tag(tag: str | None) -> int | None:
-    """Affected-row count from a command tag: 'UPDATE 664'/'DELETE 10'/'INSERT 0 5'."""
-    if not tag:
-        return None
-    last = tag.split()[-1]
-    return int(last) if last.isdigit() else None
 
 
 async def _estimate(
@@ -169,27 +159,48 @@ async def _estimate(
         await tr.rollback()
 
 
-async def _exact(
+def _static_insert_rows(sql: str) -> int | None:
+    """Count INSERT ... VALUES rows from the AST without running any SQL."""
+    stmt = parse_sql(sql)[0].stmt
+    if type(stmt).__name__ != "InsertStmt":
+        return None
+    source = getattr(stmt, "selectStmt", None)
+    values = getattr(source, "valuesLists", None) if source is not None else None
+    return len(values) if values is not None else None
+
+
+def _count_sql(sql: str) -> str | None:
+    """Build a non-mutating count for a simple UPDATE/DELETE target predicate."""
+    stmt = parse_sql(sql)[0].stmt
+    kind = type(stmt).__name__
+    if kind not in {"UpdateStmt", "DeleteStmt"}:
+        return None
+    if getattr(stmt, "withClause", None) is not None:
+        return None
+    if getattr(stmt, "fromClause", None) or getattr(stmt, "usingClause", None):
+        return None
+    relation = RawStream()(stmt.relation)
+    where = getattr(stmt, "whereClause", None)
+    where_sql = RawStream()(where) if where is not None else "true"
+    return f"SELECT count(*)::bigint FROM {relation} WHERE {where_sql}"
+
+
+async def _count_impact(
     conn, sql: str, config: SimulationConfig
 ) -> tuple[int | None, bool, str | None]:
-    """Exact affected rows via BEGIN; <stmt>; ROLLBACK, hard time-boxed.
-
-    Returns (exact_rows, timed_out, error). Always rolls back -- the write is
-    never committed.
-    """
-    tr = conn.transaction()
+    """Count target rows without executing the write or firing its triggers."""
+    count_sql = _count_sql(sql)
+    if count_sql is None:
+        return None, False, "statement shape has no safe counting query"
+    tr = conn.transaction(readonly=True)
     await tr.start()
     try:
-        # SET LOCAL is transaction-scoped; values are ints from config (safe to
-        # inline -- SET LOCAL does not accept bound parameters).
         await conn.execute(
             f"SET LOCAL statement_timeout = {int(config.statement_timeout_ms)}"
         )
         await conn.execute(f"SET LOCAL lock_timeout = {int(config.lock_timeout_ms)}")
-        tag = await conn.execute(sql)
-        return _rows_from_tag(tag), False, None
+        return int(await conn.fetchval(count_sql)), False, None
     except (QueryCanceledError, LockNotAvailableError) as exc:
-        # Hit the statement/lock timeout -- abort cleanly, report it.
         return None, True, type(exc).__name__
     except Exception as exc:
         return None, False, f"{type(exc).__name__}: {exc}"
@@ -210,8 +221,31 @@ async def simulate(
     write, or when simulation is disabled -- so callers can invoke it
     unconditionally and it self-gates.
     """
-    if not config.enabled or not is_risky_write(classification, unique_columns):
+    if (
+        not config.enabled
+        or classification.statement_count != 1
+        or not classification.statements
+        or classification.statements[0].kind != WRITE
+    ):
         return _SKIPPED
+
+    info = classification.statements[0]
+
+    if info.stmt_type == "InsertStmt":
+        rows = _static_insert_rows(sql)
+        if rows is None:
+            return SimulationResult(
+                method="unsupported",
+                error="INSERT ... SELECT impact is not safely measurable",
+            )
+        return SimulationResult(method="static", exact_rows=rows)
+
+    if (
+        info.point_write
+        and info.point_write_column in unique_columns
+        and info.stmt_type in {"UpdateStmt", "DeleteStmt"}
+    ):
+        return SimulationResult(method="bounded", estimated_rows=1)
 
     # Data-modifying CTE (P0): the outer command tag (e.g. "SELECT 1") does NOT
     # reflect the rows the nested write touches, so the exact count is not
@@ -224,19 +258,9 @@ async def simulate(
         )
 
     est_rows, est_cost, est_err, est_timed_out = await _estimate(conn, sql, config)
-
-    if not config.precise:
-        return SimulationResult(
-            method="estimate",
-            estimated_rows=est_rows,
-            estimated_cost=est_cost,
-            timed_out=est_timed_out,
-            error=est_err,
-        )
-
-    exact, timed_out, exact_err = await _exact(conn, sql, config)
+    exact, timed_out, exact_err = await _count_impact(conn, sql, config)
     return SimulationResult(
-        method="precise",
+        method="count",
         estimated_rows=est_rows,
         estimated_cost=est_cost,
         exact_rows=exact,

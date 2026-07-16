@@ -139,6 +139,13 @@ async def test_observe_mode_does_not_rewrite_live_reads(make_session):
     assert res["row_count"] == 200  # NOT capped at 5
 
 
+async def test_observe_mode_cannot_touch_interdict_control_plane(make_session):
+    sess, _ = await make_session(Policy(mode="observe", allowed_tables=None))
+    res = await sess.run_query("SELECT * FROM adb_undo.pending_approval")
+    assert res["blocked"] is True
+    assert res["block_reason"] == "CONTROL_PLANE_ACCESS"
+
+
 # --- Day 4: blast-radius simulation through the adapter -----------------------
 
 
@@ -273,6 +280,92 @@ async def test_run_approved_query_executes_approved_hold_only_once(
     assert second["ok"] is False
     assert "already executed" in f"{second['error']} {second['summary']}"
     assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 21
+
+
+async def test_approved_hold_is_invalidated_when_impact_grows(make_session, scratch):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(
+                enabled=True, confirm_over_rows=10, block_over_rows=100000
+            ),
+        )
+    )
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id > 0")
+    approval_id = held["approval_id"]
+    assert held["simulation"]["exact_rows"] == 50
+    await ApprovalStore("adb_undo").decide(
+        scratch,
+        approval_id,
+        approve=True,
+        operator_token_hash=token_hash(STRONG_OPERATOR_TOKEN),
+        decided_by="tester",
+    )
+    await scratch.execute("INSERT INTO _sim_scratch SELECT generate_series(51, 60)")
+
+    result = await sess.run_approved_query(approval_id)
+
+    assert result["ok"] is False
+    assert result["blocked"] is True
+    assert "above the 50 rows approved" in result["block_message"]
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 60
+
+
+async def test_approved_hold_is_invalidated_when_policy_changes(make_session, scratch):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(enabled=True, confirm_over_rows=10),
+        )
+    )
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+    await ApprovalStore("adb_undo").decide(
+        scratch,
+        held["approval_id"],
+        approve=True,
+        operator_token_hash=token_hash(STRONG_OPERATOR_TOKEN),
+        decided_by="tester",
+    )
+    sess._policy = Policy(read_only=True, allowed_tables=None)
+
+    result = await sess.run_approved_query(held["approval_id"])
+
+    assert result["ok"] is False
+    assert "policy changed" in result["error"]
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
+
+
+async def test_approved_hold_is_invalidated_when_table_is_replaced(
+    make_session, scratch
+):
+    sess, _ = await make_session(
+        Policy(
+            allowed_tables=None,
+            simulation=SimulationConfig(enabled=True, confirm_over_rows=10),
+        )
+    )
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    held = await sess.run_query("DELETE FROM _sim_scratch WHERE id <= 29")
+    await ApprovalStore("adb_undo").decide(
+        scratch,
+        held["approval_id"],
+        approve=True,
+        operator_token_hash=token_hash(STRONG_OPERATOR_TOKEN),
+        decided_by="tester",
+    )
+    await scratch.execute("ALTER TABLE _sim_scratch RENAME TO _sim_scratch_old")
+    await scratch.execute("CREATE TABLE _sim_scratch (id int primary key)")
+    await scratch.execute("INSERT INTO _sim_scratch SELECT generate_series(1, 50)")
+
+    result = await sess.run_approved_query(held["approval_id"])
+
+    assert result["ok"] is False
+    assert "object identity changed" in result["error"]
+    assert await scratch.fetchval("SELECT count(*) FROM _sim_scratch") == 50
+    await scratch.execute("DROP TABLE _sim_scratch")
+    await scratch.execute("ALTER TABLE _sim_scratch_old RENAME TO _sim_scratch")
 
 
 async def test_approval_decide_wrong_token_hash_leaves_hold_pending(
@@ -465,6 +558,10 @@ def test_agent_tool_has_no_confirmation_bypass():
     assert "confirm" not in params
     assert "operator_approved" not in params  # operator seam is server-side only
 
+    from adapters.mcp_server import request_revert
+
+    assert "operator_token" not in inspect.signature(request_revert).parameters
+
 
 async def test_operator_approval_requires_token(make_session, scratch):
     sess, _ = await make_session(
@@ -528,13 +625,52 @@ async def test_write_is_reversible_through_adapter(make_session, scratch):
     tagged = "SELECT count(*) FROM _sim_scratch WHERE label = 'tagged'"
     assert await scratch.fetchval(tagged) == 3
 
-    rev = await sess.revert_write(res["undo_action_id"], agent="agent-7")
+    sess._operator_token = STRONG_OPERATOR_TOKEN
+    requested = await sess.revert_write(res["undo_action_id"], agent="agent-7")
+    assert requested["requires_confirmation"] is True
+    assert await scratch.fetchval(tagged) == 3
+    rev = await sess.approve_query(
+        requested["approval_id"],
+        operator_token=STRONG_OPERATOR_TOKEN,
+        operator="human-1",
+    )
     assert rev["ok"] is True
     assert rev["operation"] == "update"
     assert await scratch.fetchval(tagged) == 0  # labels restored to NULL
 
 
-async def test_revert_requires_same_agent_or_operator_token(make_session, scratch):
+async def test_user_trigger_blocks_automatic_undo_promise(make_session, scratch):
+    sess, _ = await make_session(
+        Policy(allowed_tables=None, undo=UndoConfig(enabled=True))
+    )
+    await scratch.execute("ALTER TABLE _sim_scratch ADD COLUMN label text")
+    await scratch.execute("CREATE TABLE _trigger_effects (n int)")
+    await scratch.execute("INSERT INTO _trigger_effects VALUES (0)")
+    await scratch.execute(
+        """CREATE FUNCTION _interdict_test_trigger() RETURNS trigger AS $$
+        BEGIN UPDATE _trigger_effects SET n=n+1; RETURN NEW; END
+        $$ LANGUAGE plpgsql"""
+    )
+    await scratch.execute(
+        "CREATE TRIGGER _interdict_user_trigger BEFORE UPDATE ON _sim_scratch "
+        "FOR EACH ROW EXECUTE FUNCTION _interdict_test_trigger()"
+    )
+    try:
+        result = await sess.run_query(
+            "UPDATE _sim_scratch SET label='x' WHERE id=1", agent="agent-1"
+        )
+        assert result["blocked"] is True
+        assert "user-defined triggers" in result["undo_reason"]
+        assert await scratch.fetchval("SELECT n FROM _trigger_effects") == 0
+        assert (
+            await scratch.fetchval("SELECT label FROM _sim_scratch WHERE id=1") is None
+        )
+    finally:
+        await scratch.execute("DROP FUNCTION _interdict_test_trigger() CASCADE")
+        await scratch.execute("DROP TABLE _trigger_effects")
+
+
+async def test_revert_always_requires_human_approval(make_session, scratch):
     sess, _ = await make_session(
         Policy(allowed_tables=None, undo=UndoConfig(enabled=True))
     )
@@ -544,18 +680,21 @@ async def test_revert_requires_same_agent_or_operator_token(make_session, scratc
         "UPDATE _sim_scratch SET label = 'tagged' WHERE id = 1",
         agent="agent-owner",
     )
-    denied = await sess.revert_write(res["undo_action_id"], agent="agent-other")
-    assert denied["ok"] is False
-    assert denied["unauthorized"] is True
+    requested = await sess.revert_write(res["undo_action_id"], agent="agent-other")
+    assert requested["requires_confirmation"] is True
     assert (
         await scratch.fetchval("SELECT label FROM _sim_scratch WHERE id = 1")
         == "tagged"
     )
 
-    approved = await sess.revert_write(
-        res["undo_action_id"],
-        agent="agent-other",
+    denied = await sess.approve_query(
+        requested["approval_id"], operator_token="wrong", operator="human-1"
+    )
+    assert denied["ok"] is False
+    approved = await sess.approve_query(
+        requested["approval_id"],
         operator_token=STRONG_OPERATOR_TOKEN,
+        operator="human-1",
     )
     assert approved["ok"] is True
     assert await scratch.fetchval("SELECT label FROM _sim_scratch WHERE id = 1") is None
@@ -733,11 +872,12 @@ async def test_bulk_equality_write_is_simulated_pk_point_write_is_not():
         bulk = await sess.run_query("UPDATE bulk_scratch SET grp = grp WHERE grp = 1")
         assert bulk["requires_confirmation"] is True
         assert bulk["simulation"]["exact_rows"] == 200
-        # point: id IS the PK -> not simulated -> executes
+        # point: id IS the PK -> statically bounded to one row -> executes
         point = await sess.run_query("UPDATE bulk_scratch SET grp = 2 WHERE id = 1")
         assert point["requires_confirmation"] is False
         assert point["status"] == "UPDATE 1"
-        assert point["simulation"] is None
+        assert point["simulation"]["method"] == "bounded"
+        assert point["simulation"]["affected_rows"] == 1
     finally:
         await _clear_pending_approvals(pool, policy.undo.schema)
         async with pool.acquire() as c:

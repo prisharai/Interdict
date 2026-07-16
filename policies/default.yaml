@@ -53,8 +53,9 @@ ddl:
 
 # Blast-radius simulation (differentiator #1). OFF the normal path -- only a
 # single-statement risky write is ever simulated, and only when enforcing.
-# `precise` runs BEGIN/<stmt>/ROLLBACK for an exact affected-row count (takes
-# locks, hard time-boxed); set false for EXPLAIN-estimate only (no locks).
+# Preview never executes the proposed write. Simple UPDATE/DELETE statements
+# use a read-only count; INSERT ... VALUES is counted from the parsed AST.
+# `precise` is retained for configuration compatibility and is currently ignored.
 simulation:
   enabled: true
   precise: true
@@ -65,12 +66,15 @@ simulation:
 
 # Reversibility / instant undo (differentiator #2). Write path only -- a
 # before-image of every reversible write is captured so it can be reverted with
-# its action id. The undo log lives in a sidecar schema in the same database.
+# its action id. Production stores evidence in AGENT_CONTROL_DSN; `schema` names
+# the destination schema and remains in the application DB only in development.
 undo:
   enabled: true
   schema: adb_undo
   block_non_reversible: true
   require_agent_match: true
+  max_capture_rows: 10000
+  max_capture_bytes: 16777216
 
 # Intent-mismatch detection (advisory). Compares the agent's stated_task to the
 # statement's actual effect and flags contradictions. A HIGH mismatch (e.g. a

@@ -36,9 +36,9 @@ role touch this table?", but not "how much will this statement change?" or "can
 I undo it if the agent is wrong?" Interdict answers those questions before
 damage is done.
 
-It parses SQL into a Postgres AST, applies deterministic policy, measures risky
-writes in a throwaway transaction, holds high-impact changes for operator
-approval, and records allowed writes so they can be reverted with one command.
+It parses SQL into a Postgres AST, applies deterministic policy, measures every
+write without executing it, holds high-impact changes for operator approval,
+and records supported writes so a human can approve reverting them.
 Blocks return structured explanations and repair hints so the agent can correct
 itself and retry.
 
@@ -63,9 +63,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full local validation loop.
 
 ## Quickstart
 
-Point Interdict at Postgres and start the MCP server:
+For local evaluation, explicitly select the relaxed development profile:
 
 ```bash
+AGENT_SAFETY_PROFILE=development \
 AGENT_DB_DSN=postgresql://user:password@host:5432/yourdb \
 AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
 interdict
@@ -90,9 +91,55 @@ interdict approve <approval_id>   # then the agent calls run_approved_query
 interdict deny <approval_id>
 ```
 
-Holds expire after 30 minutes so stale measurements cannot be acted on. Every
-successful write returns an `undo_id`; ask the agent to call `revert_write` to
-reverse it.
+Holds expire after 30 minutes so stale measurements cannot be acted on. A
+supported successful write returns an `undo_id`. Reversal is also human-gated:
+
+```text
+agent: request_revert(action_id) -> human: interdict approve <id>
+agent: run_approved_revert(approval_id)
+```
+
+## Production setup
+
+Production mode is the default and refuses to start when the database boundary
+is unsafe. The application connection must be a non-owner, non-superuser role
+with access only to explicitly allowed tables. Approvals, undo evidence, and a
+durable audit copy must use a different database and a different role through
+`AGENT_CONTROL_DSN`.
+
+1. Create a production policy with schema-qualified tables:
+
+   ```yaml
+   mode: enforce
+   require_qualified_tables: true
+   tables:
+     allow: [public.orders, public.customers]
+   ```
+
+2. Review the least-privilege SQL template. This command only prints SQL; it
+   never changes a database:
+
+   ```bash
+   AGENT_POLICY=policies/production.yaml interdict init
+   ```
+
+3. Use distinct credentials and run the deployment check:
+
+   ```bash
+   export AGENT_SAFETY_PROFILE=production
+   export AGENT_DB_DSN='postgresql://interdict_app:...@app-host/appdb'
+   export AGENT_CONTROL_DSN='postgresql://interdict_control:...@control-host/controldb'
+   export AGENT_POLICY='policies/production.yaml'
+   export AGENT_OPERATOR_ID='oncall@example.com'
+   export AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+   interdict doctor
+   interdict
+   ```
+
+For an upgrade from the older in-application `adb_undo` schema, run
+`interdict migrate-control`. It is idempotent and copy-only: it does not delete
+the old records. Verify the copy and your backups before manually revoking or
+archiving the legacy schema.
 
 ## Benchmarks
 
@@ -107,7 +154,7 @@ Interdict keeps a hard latency budget: the pass-through path must stay under
 | Safe statements wrongly blocked, green corpus | **0%** of 18 |
 | Blast-radius measurement | exact row counts, live |
 | Undo round-trip | ~4 ms, conflict-checked restore |
-| Automated tests | **343**, run in CI on every commit |
+| Automated tests | **370**, run in CI on every commit |
 
 The benchmark methodology, caveats, and raw tables live in
 [benchmarks/RESULTS.md](benchmarks/RESULTS.md). CI runs lint, the full pytest
@@ -119,13 +166,33 @@ request.
 | Variable | Default | Purpose |
 |---|---|---|
 | `AGENT_DB_DSN` | local dev DSN | Target Postgres connection string. |
+| `AGENT_CONTROL_DSN` | unset | Separate control database for approvals, undo evidence, and durable audit events; required in production. |
+| `AGENT_SAFETY_PROFILE` | `production` | `production` fails startup on unsafe privileges; `development` relaxes deployment topology. |
 | `AGENT_POLICY` | `policies/default.yaml` | Database-agnostic safety policy. |
 | `AGENT_OPERATOR_TOKEN` | unset | Required to approve held writes; use at least 32 random characters. |
+| `AGENT_OPERATOR_ID` | unset | Stable identity recorded for the human operator; required in production. |
 | `AGENT_APPROVAL_TTL_SECONDS` | `1800` | How long a held write stays approvable. |
 | `AGENT_AUDIT_LOG` | `~/.interdict/audit.jsonl` | Async audit log with raw SQL redacted and hashes retained. |
 
 `policies/pagila.yaml` shows a stricter allowlist-style policy for the bundled
 development database.
+
+## Honest limits
+
+- Interdict only governs SQL sent through its adapter. Do not give the agent a
+  raw database DSN, cloud-admin token, shell with production credentials, or a
+  second unguarded database tool.
+- Undo is bounded compensation, not a backup system. Interdict blocks automatic
+  undo for unsupported statement shapes, user triggers, cascading foreign-key
+  actions, oversized captures, and conflicts detected during restore.
+- Keep encrypted backups and point-in-time recovery in a different failure
+  domain from the production volume, and regularly test restoration. A backup
+  on the same volume does not protect against volume deletion.
+- Least privilege, dev/staging separation, reviewed migrations, CI/CD gates,
+  provider deletion protection, and human incident procedures remain required.
+- The MCP adapter cannot intercept destructive cloud API calls such as deleting
+  a Railway volume. The agent must not possess credentials scoped to those
+  actions; enforce that boundary in your cloud IAM system.
 
 ## Development
 

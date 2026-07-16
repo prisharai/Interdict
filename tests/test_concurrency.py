@@ -111,7 +111,7 @@ async def test_concurrent_claims_execute_exactly_once(pool):
     assert len(winners) == 1
     async with pool.acquire() as conn:
         row = await store.get(conn, approval_id)
-    assert row["status"] == "executed"
+    assert row["status"] == "executing"
 
 
 async def test_concurrent_approve_and_deny_exactly_one_decision(pool):

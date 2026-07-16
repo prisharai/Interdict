@@ -62,6 +62,23 @@ def test_system_catalog_blocked():
     assert ReasonCode.SYSTEM_CATALOG in _codes(decide("SELECT * FROM pg_class", p))
 
 
+@pytest.mark.parametrize("mode", ["enforce", "observe"])
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM adb_undo.pending_approval",
+        "UPDATE adb_undo.pending_approval SET status='approved' "
+        "WHERE approval_id='00000000-0000-0000-0000-000000000000'",
+        "DELETE FROM interdict_control.undo_log "
+        "WHERE action_id='00000000-0000-0000-0000-000000000000'",
+        "SELECT interdict_control.approve('x')",
+    ],
+)
+def test_control_plane_is_always_reserved(mode, sql):
+    decision = decide(sql, Policy(mode=mode, allowed_tables=None))
+    assert ReasonCode.CONTROL_PLANE in _codes(decision)
+
+
 def test_table_allowlist_default_deny():
     p = Policy(allowed_tables=frozenset({"film"}))
     assert decide("SELECT * FROM film WHERE film_id = 1", p).allowed
@@ -75,6 +92,15 @@ def test_table_allowlist_folds_public_schema():
     assert decide("SELECT * FROM public.film WHERE film_id = 1", p).allowed
     # a different schema is NOT folded -> blocked.
     assert not decide("SELECT * FROM other.film WHERE film_id = 1", p).allowed
+
+
+def test_production_style_policy_requires_qualified_query_tables():
+    p = Policy(
+        allowed_tables=frozenset({"film"}),
+        require_qualified_tables=True,
+    )
+    assert not decide("SELECT * FROM film WHERE film_id = 1", p).allowed
+    assert decide("SELECT * FROM public.film WHERE film_id = 1", p).allowed
 
 
 def test_ddl_default_deny_and_allowlist():

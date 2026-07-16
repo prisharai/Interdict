@@ -20,7 +20,8 @@ Design for the latency budget:
   a query. The dropped-count surfaces the rare case where the writer can't keep
   up so it's visible rather than silent.
 
-This is Day 1 (shadow mode): we log everything and enforce nothing.
+When a separate control pool is supplied, each already-redacted event is also
+written to an append-only table there.  The query path still only enqueues.
 """
 
 from __future__ import annotations
@@ -51,20 +52,41 @@ class AuditLog:
         path: str | Path,
         *,
         max_queue: int = _DEFAULT_MAX_QUEUE,
+        control_pool=None,
+        control_schema: str = "interdict_control",
     ) -> None:
         self._path = Path(path)
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=max_queue)
         self._task: asyncio.Task[None] | None = None
         self._stopping = False
+        self._control_pool = control_pool
+        self._control_schema = control_schema
         # Observability for the fail-open drop path.
         self.dropped = 0
         self.last_drop_ts: float | None = None
+        self.control_write_errors = 0
+
+    @property
+    def _control_table(self) -> str:
+        schema = '"' + self._control_schema.replace('"', '""') + '"'
+        return f"{schema}.audit_event"
 
     async def start(self) -> None:
         """Open the log file and launch the background consumer."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         # Touch the file so it exists even before the first flush.
         self._path.touch(exist_ok=True)
+        if self._control_pool is not None:
+            schema = '"' + self._control_schema.replace('"', '""') + '"'
+            async with self._control_pool.acquire() as conn:
+                await conn.execute(f"CREATE SCHEMA IF NOT EXISTS {schema}")
+                await conn.execute(
+                    f"""CREATE TABLE IF NOT EXISTS {self._control_table} (
+                        event_id bigserial PRIMARY KEY,
+                        recorded_at timestamptz NOT NULL DEFAULT now(),
+                        payload jsonb NOT NULL
+                    )"""
+                )
         self._stopping = False
         self._task = asyncio.create_task(self._consume(), name="audit-consumer")
 
@@ -93,6 +115,8 @@ class AuditLog:
             "dropped": self.dropped,
             "last_drop_ts": self.last_drop_ts,
             "running": self._task is not None and not self._task.done(),
+            "durable_control_store": self._control_pool is not None,
+            "control_write_errors": self.control_write_errors,
         }
 
     async def _consume(self) -> None:
@@ -111,13 +135,32 @@ class AuditLog:
                 except asyncio.QueueEmpty:
                     break
             try:
-                await asyncio.to_thread(self._write_batch, batch)
-            except OSError:
-                # Disk gone read-only/full/deleted: logging is fail-open, so
-                # count the loss and keep consuming -- a dead consumer would
-                # silently fill the queue and drop everything forever after.
-                self.dropped += len(batch)
-                self.last_drop_ts = time.time()
+                await self._flush_batch(batch)
+            finally:
+                for _ in batch:
+                    self._queue.task_done()
+
+    async def _flush_batch(self, batch: list[dict[str, Any]]) -> None:
+        try:
+            await asyncio.to_thread(self._write_batch, batch)
+        except OSError:
+            # Disk gone read-only/full/deleted: logging is fail-open, so count
+            # the loss and keep the consumer alive.
+            self.dropped += len(batch)
+            self.last_drop_ts = time.time()
+        if self._control_pool is not None:
+            try:
+                payloads = [(json.dumps(entry, default=str),) for entry in batch]
+                async with self._control_pool.acquire() as conn:
+                    await conn.executemany(
+                        f"INSERT INTO {self._control_table} (payload) "
+                        "VALUES ($1::jsonb)",
+                        payloads,
+                    )
+            except Exception:
+                # The local JSONL remains a second sink. Surface durable-store
+                # failures without putting database availability on the query path.
+                self.control_write_errors += len(batch)
 
     def _write_batch(self, batch: list[dict[str, Any]]) -> None:
         """Blocking disk write; runs in a worker thread, off the event loop."""
@@ -130,19 +173,8 @@ class AuditLog:
         if self._task is None:
             return
         self._stopping = True
-        # Drain whatever is left synchronously, then cancel the consumer.
-        remaining: list[dict[str, Any]] = []
-        while True:
-            try:
-                remaining.append(self._queue.get_nowait())
-            except asyncio.QueueEmpty:
-                break
-        if remaining:
-            try:
-                await asyncio.to_thread(self._write_batch, remaining)
-            except OSError:
-                self.dropped += len(remaining)
-                self.last_drop_ts = time.time()
+        # Let the consumer finish every queued event before cancellation.
+        await self._queue.join()
         self._task.cancel()
         try:
             await self._task

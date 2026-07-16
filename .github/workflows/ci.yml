@@ -73,6 +73,8 @@ jobs:
               -v ON_ERROR_STOP=1 -q -f "$f"
           done
       - name: pytest
+        env:
+          INTERDICT_FAIL_ON_SKIPS: "1"
         run: uv run pytest
 
   latency-gate:

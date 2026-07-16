@@ -33,4 +33,5 @@ def test_executed_summary_includes_revert_hint_for_undoable_write():
     summary = _executed_summary("DELETE 100", 100, None, "undo-123")
 
     assert "undo_id=undo-123" in summary
-    assert 'revert_write(action_id="undo-123")' in summary
+    assert 'request_revert(action_id="undo-123")' in summary
+    assert "human" in summary
