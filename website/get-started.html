@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Get started with Interdict</title>
+    <meta
+      name="description"
+      content="Install Interdict, configure a protected PostgreSQL profile, and connect Claude, Codex, Cursor, or any MCP client."
+    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="get-started.css" />
+  </head>
+  <body class="guide-body">
+    <header class="guide-nav">
+      <a class="brand" href="index.html" aria-label="Interdict home">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Interdict</span>
+      </a>
+      <div class="header-actions">
+        <a class="header-link" href="index.html">Home</a>
+        <a
+          class="header-link"
+          href="https://github.com/prisharai/Interdict"
+          target="_blank"
+          rel="noreferrer"
+          >GitHub</a
+        >
+        <a class="pill-cta" href="#install">Install</a>
+      </div>
+    </header>
+
+    <main class="guide-shell">
+      <aside class="guide-toc" aria-label="Guide navigation">
+        <p>On this page</p>
+        <a href="#install">1. Install</a>
+        <a href="#setup">2. Set up a profile</a>
+        <a href="#connect">3. Connect your agent</a>
+        <a href="#work">Daily workflow</a>
+        <a href="#approvals">Human approvals</a>
+        <a href="#profiles">Multiple databases</a>
+        <a href="#production">Production handoff</a>
+        <a href="#commands">Command reference</a>
+      </aside>
+
+      <article class="guide-content">
+        <section class="guide-hero">
+          <span class="eyebrow">The complete user start guide</span>
+          <h1>Your agent gets useful.<br />Your database stays guarded.</h1>
+          <p>
+            Configure each database once. After that, ask Claude, Codex, Cursor,
+            or any MCP agent to do normal database work. Interdict starts in the
+            background and checks every query before PostgreSQL sees it.
+          </p>
+          <div class="three-command" aria-label="Three command quickstart">
+            <div><span>1</span><code>pip install interdict-db</code></div>
+            <div><span>2</span><code>interdict setup</code></div>
+            <div><span>3</span><code>interdict connect claude</code></div>
+          </div>
+          <p class="package-note">
+            The PyPI package is <code>interdict-db</code>. It installs the short
+            <code>interdict</code> terminal command.
+          </p>
+        </section>
+
+        <section id="install" class="guide-section">
+          <span class="step-number">01</span>
+          <h2>Install Interdict</h2>
+          <p>Interdict requires Python 3.11 or newer. Install it once:</p>
+          <div class="command-box">
+            <code>pip install interdict-db</code>
+            <button class="guide-copy" data-copy="pip install interdict-db">Copy</button>
+          </div>
+          <p>Confirm the command is available:</p>
+          <pre><code>interdict --version</code></pre>
+        </section>
+
+        <section id="setup" class="guide-section">
+          <span class="step-number">02</span>
+          <h2>Set up your first database</h2>
+          <p>Run the guided wizard. No YAML editing is required.</p>
+          <div class="command-box">
+            <code>interdict setup --name production</code>
+            <button class="guide-copy" data-copy="interdict setup --name production">Copy</button>
+          </div>
+          <p>The wizard walks you through:</p>
+          <div class="feature-grid">
+            <div><b>Connection test</b><span>Confirms PostgreSQL is reachable.</span></div>
+            <div><b>Table discovery</b><span>Shows real schemas and tables to choose from.</span></div>
+            <div><b>Safety preset</b><span>Production, read-only, or development.</span></div>
+            <div><b>Control storage</b><span>Initializes approvals, undo evidence, and audit records.</span></div>
+            <div><b>Policy generation</b><span>Writes a safe policy from your choices.</span></div>
+            <div><b>Privilege audit</b><span>Refuses overpowered production roles.</span></div>
+          </div>
+          <div class="callout">
+            <b>Where are passwords stored?</b>
+            <p>
+              Interdict uses the operating-system credential store when
+              available. On headless systems it falls back to an owner-only
+              file. Secrets are not written into Claude or Codex configuration.
+            </p>
+          </div>
+        </section>
+
+        <section id="connect" class="guide-section">
+          <span class="step-number">03</span>
+          <h2>Connect your AI agent</h2>
+          <p>Choose the profile a human wants this agent to use:</p>
+          <div class="command-box">
+            <code>interdict connect claude --profile production</code>
+            <button class="guide-copy" data-copy="interdict connect claude --profile production">Copy</button>
+          </div>
+          <div class="client-list">
+            <code>interdict connect codex --profile production</code>
+            <code>interdict connect cursor --profile production</code>
+            <code>interdict connect custom --profile production</code>
+          </div>
+          <p>
+            Claude and Codex receive a command that launches
+            <code>interdict --profile production</code>. Cursor receives a
+            project MCP configuration. Custom prints portable MCP JSON.
+          </p>
+          <p>
+            The agent cannot switch profiles through an Interdict tool. A human
+            chooses which database is connected.
+          </p>
+        </section>
+
+        <section id="work" class="guide-section">
+          <span class="eyebrow">Daily workflow</span>
+          <h2>Now, ask your agent normally</h2>
+          <blockquote>“Find every overdue invoice from last month.”</blockquote>
+          <div class="flow-row">
+            <div><b>Agent writes SQL</b><span>You stay in the conversation.</span></div>
+            <i>→</i>
+            <div><b>Interdict checks it</b><span>Policy, scope, impact, and undoability.</span></div>
+            <i>→</i>
+            <div><b>Postgres runs it</b><span>Only after the decision allows it.</span></div>
+          </div>
+          <p>
+            Safe reads and small writes continue automatically. Forbidden SQL
+            is blocked before PostgreSQL. Large writes stop for a human decision.
+          </p>
+        </section>
+
+        <section id="approvals" class="guide-section">
+          <span class="eyebrow">Human control</span>
+          <h2>Review dangerous work in plain language</h2>
+          <pre><code>interdict approvals --profile production
+
+1 pending approval · profile production
+
+SQL · 98c4…
+   SQL: UPDATE public.customers SET status='inactive' …
+   Reason: Deactivate accounts inactive for two years
+   Requested by: Claude
+   Impact: blast radius 4,238 rows</code></pre>
+          <p>Approve or deny the newest request:</p>
+          <div class="client-list">
+            <code>interdict approve latest --profile production</code>
+            <code>interdict deny latest --profile production</code>
+          </div>
+          <p>Request and approve the newest available undo:</p>
+          <pre><code>interdict revert latest --profile production</code></pre>
+          <p>
+            The approval secret never enters the AI conversation. The agent can
+            only execute the exact SQL that the human reviewed, once.
+          </p>
+        </section>
+
+        <section id="profiles" class="guide-section">
+          <span class="eyebrow">Multiple databases</span>
+          <h2>Configure once, reuse by name</h2>
+          <div class="client-list">
+            <code>interdict setup --name production</code>
+            <code>interdict setup --name staging</code>
+            <code>interdict setup --name analytics</code>
+          </div>
+          <p>See every configured database:</p>
+          <pre><code>interdict profiles</code></pre>
+          <p>Select the default for human terminal commands:</p>
+          <pre><code>interdict profile use production</code></pre>
+          <p>
+            Each connected MCP server still pins an explicit profile, so an
+            agent connected to staging cannot silently redirect itself to production.
+          </p>
+        </section>
+
+        <section id="production" class="guide-section">
+          <span class="eyebrow">Enterprise production</span>
+          <h2>One small DBA handoff remains intentional</h2>
+          <p>
+            Interdict will not silently grant itself production access. If the
+            wizard finds a superuser, database owner, table owner, or role with
+            dangerous DDL privileges, it creates a reviewable SQL file for your DBA.
+          </p>
+          <pre><code>interdict doctor --profile production</code></pre>
+          <p>Production is ready only when doctor reports:</p>
+          <pre><code>PASS: production privilege boundaries are configured.</code></pre>
+          <div class="callout warning">
+            <b>Interdict is defense in depth.</b>
+            <p>
+              Keep raw database credentials and cloud-admin tokens away from the
+              agent. Maintain off-volume backups and point-in-time recovery.
+              Interdict undo evidence is not a disaster-recovery replacement.
+            </p>
+          </div>
+        </section>
+
+        <section id="commands" class="guide-section">
+          <span class="eyebrow">Reference</span>
+          <h2>The commands you will actually use</h2>
+          <div class="command-table">
+            <div><code>interdict setup</code><span>Guided database configuration.</span></div>
+            <div><code>interdict profiles</code><span>List configured databases.</span></div>
+            <div><code>interdict profile use NAME</code><span>Select the human terminal default.</span></div>
+            <div><code>interdict connect CLIENT</code><span>Install MCP configuration.</span></div>
+            <div><code>interdict doctor</code><span>Verify production boundaries.</span></div>
+            <div><code>interdict approvals</code><span>Review held work.</span></div>
+            <div><code>interdict approve latest</code><span>Approve the newest request.</span></div>
+            <div><code>interdict deny latest</code><span>Deny the newest request.</span></div>
+            <div><code>interdict revert latest</code><span>Human-initiate the newest undo.</span></div>
+          </div>
+        </section>
+
+        <section class="guide-finish">
+          <h2>Install. Configure once. Ask your agent to work.</h2>
+          <div class="command-box dark-command">
+            <code>pip install interdict-db</code>
+            <button class="guide-copy" data-copy="pip install interdict-db">Copy</button>
+          </div>
+          <a class="pill-cta inverse" href="https://github.com/prisharai/Interdict">Read the source</a>
+        </section>
+      </article>
+    </main>
+
+    <footer class="guide-footer">
+      <a class="brand" href="index.html"><span class="brand-mark"></span><span>Interdict</span></a>
+      <span>Runtime safety for agent-written SQL.</span>
+    </footer>
+    <script src="get-started.js"></script>
+  </body>
+</html>

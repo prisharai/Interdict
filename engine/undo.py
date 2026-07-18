@@ -430,6 +430,20 @@ class UndoStore:
         )
         return dict(row) if row else None
 
+    async def latest_active(self, conn) -> dict | None:
+        """Newest undo record that is still eligible for a revert request."""
+        row = await conn.fetchrow(
+            f"""SELECT action_id::text, agent, stated_task, principal::text,
+                       target_table, operation, pk_columns, row_count,
+                       before_images::text, after_images::text, status,
+                       reverted_by::text
+                  FROM {self._log}
+                 WHERE status='active'
+                 ORDER BY created_at DESC
+                 LIMIT 1"""
+        )
+        return dict(row) if row else None
+
     async def mark_reverted(self, conn, action_id, reverted_by: dict) -> None:
         await conn.execute(
             f"UPDATE {self._log} SET status='reverted', reverted_at=now() "

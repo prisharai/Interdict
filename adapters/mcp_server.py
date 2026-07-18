@@ -93,6 +93,51 @@ MIN_OPERATOR_TOKEN_LENGTH = 32
 APPROVAL_TTL_SECONDS = int(
     os.environ.get("AGENT_APPROVAL_TTL_SECONDS", str(DEFAULT_TTL_SECONDS))
 )
+ACTIVE_PROFILE_NAME: str | None = None
+
+
+def _activate_profile(name: str) -> None:
+    """Load one human-selected profile into the existing runtime globals."""
+    from engine.profiles import ProfileStore
+
+    runtime = ProfileStore().runtime_environment(name)
+    for key in (
+        "AGENT_DB_DSN",
+        "AGENT_CONTROL_DSN",
+        "AGENT_SAFETY_PROFILE",
+        "AGENT_OPERATOR_TOKEN",
+        "AGENT_OPERATOR_ID",
+        "AGENT_POLICY",
+        "AGENT_AUDIT_LOG",
+    ):
+        os.environ.pop(key, None)
+    os.environ.update(runtime)
+
+    global ACTIVE_PROFILE_NAME
+    global AUDIT_LOG_PATH
+    global CONTROL_DSN
+    global DB_DSN
+    global OPERATOR_ID
+    global OPERATOR_TOKEN
+    global POLICY_PATH
+    global SAFETY_PROFILE
+    ACTIVE_PROFILE_NAME = name
+    DB_DSN = runtime["AGENT_DB_DSN"]
+    CONTROL_DSN = runtime.get("AGENT_CONTROL_DSN")
+    SAFETY_PROFILE = runtime["AGENT_SAFETY_PROFILE"]
+    OPERATOR_TOKEN = runtime.get("AGENT_OPERATOR_TOKEN")
+    OPERATOR_ID = runtime.get("AGENT_OPERATOR_ID")
+    POLICY_PATH = runtime["AGENT_POLICY"]
+    AUDIT_LOG_PATH = runtime["AGENT_AUDIT_LOG"]
+
+
+def _profile_argument(argv: list[str]) -> tuple[str | None, list[str]]:
+    if "--profile" not in argv:
+        return None, argv
+    index = argv.index("--profile")
+    if index + 1 >= len(argv):
+        raise ValueError("--profile requires a profile name")
+    return argv[index + 1], argv[:index] + argv[index + 2 :]
 
 
 def _simulation_summary(simulation: dict | None) -> str:
@@ -115,15 +160,18 @@ def _blocked_summary(reason: str | None, message: str | None) -> str:
 
 
 def _held_summary(approval_id: str, simulation: dict | None) -> str:
+    profile_flag = f" --profile {ACTIVE_PROFILE_NAME}" if ACTIVE_PROFILE_NAME else ""
     return (
-        "This write requires out-of-band approval (the operator token must "
-        "never enter this chat). "
+        "This write requires out-of-band human approval. Interdict keeps the "
+        "approval credential outside this chat. "
         f"approval_id={approval_id}. "
         f"{_simulation_summary(simulation)}.\n\n"
         "NEXT STEPS:\n"
-        "1. In YOUR terminal (not here): "
-        f"AGENT_OPERATOR_TOKEN=your_token interdict approve {approval_id}\n"
-        "2. Then in this chat: call "
+        "1. In YOUR terminal (not here), review it:\n"
+        f"   interdict approvals{profile_flag}\n"
+        "2. If it is correct, approve this exact request:\n"
+        f"   interdict approve {approval_id}{profile_flag}\n"
+        "3. Then in this chat: call "
         f'run_approved_query(approval_id="{approval_id}")\n'
         "   (No token needed - the approval already happened)"
     )
@@ -1327,27 +1375,39 @@ def _preflight() -> None:
         f"(policy: {POLICY_PATH}, audit: {AUDIT_LOG_PATH})",
         file=sys.stderr,
     )
-    print(
-        "\nTo connect Claude Code:\n"
-        "  claude mcp add interdict \\\n"
-        f"    --env AGENT_DB_DSN={redact_text(DB_DSN)} \\\n"
-        '    --env AGENT_OPERATOR_TOKEN="..." \\\n'
-        "    -- interdict\n",
-        file=sys.stderr,
-    )
+    if ACTIVE_PROFILE_NAME:
+        print(
+            "interdict: human approval queue -- "
+            f"interdict approvals --profile {ACTIVE_PROFILE_NAME}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "interdict: for guided setup, run `interdict setup`; then "
+            "`interdict connect claude --profile NAME`.",
+            file=sys.stderr,
+        )
 
 
 _USAGE = """Usage:
-  interdict                     Run the MCP server over stdio (agent-facing)
-  interdict doctor              Check production privilege boundaries
+  interdict setup [--name NAME] Guided database and policy setup
+  interdict profiles            List named database profiles
+  interdict profile use NAME    Select the human-controlled default profile
+  interdict connect CLIENT --profile NAME
+                                Connect Claude, Codex, Cursor, or a custom client
+  interdict --profile NAME      Run the MCP server for one profile
+  interdict doctor [--profile NAME]
+                                Check production privilege boundaries
   interdict init                Print least-privilege setup SQL (does not run it)
   interdict migrate-control     Copy legacy control records; delete nothing
-  interdict pending             List writes held for approval
-  interdict approve <id>        Approve a held write (agent then executes it)
-  interdict deny <id>           Deny a held write
+  interdict approvals           Review writes held for human approval
+  interdict approve <id|latest> Approve a held write
+  interdict deny <id|latest>    Deny a held write
+  interdict revert <id|latest>  Request and approve a recorded undo
   interdict --version           Print version
 
 Environment:
+  Advanced manual configuration (named profiles are recommended):
   AGENT_DB_DSN             Postgres DSN to protect
   AGENT_CONTROL_DSN        Separate Postgres database for approvals/undo metadata
   AGENT_SAFETY_PROFILE     production (default) or development
@@ -1356,75 +1416,161 @@ Environment:
   AGENT_POLICY             YAML policy path
   AGENT_AUDIT_LOG          JSONL audit log path
 
-Approving is done here, in YOUR terminal, on purpose: the agent never sees
-the operator token. After you approve, the agent runs the write by calling
-run_approved_query(approval_id)."""
+Approving is done in YOUR terminal, on purpose: the agent never sees the
+approval credential. Start with `interdict setup`, then connect an agent with
+`interdict connect claude --profile NAME`."""
 
 
 def _operator_cli(argv: list[str]) -> int:
     """Human-side approval commands. Runs in the operator's own terminal."""
     command, args = argv[0], argv[1:]
     store = ApprovalStore(CONTROL_SCHEMA, ttl_seconds=APPROVAL_TTL_SECONDS)
+    profile_flag = f" --profile {ACTIVE_PROFILE_NAME}" if ACTIVE_PROFILE_NAME else ""
+
+    def _require_token() -> bool:
+        if not OPERATOR_TOKEN or len(OPERATOR_TOKEN) < MIN_OPERATOR_TOKEN_LENGTH:
+            print(
+                "interdict: the profile needs an operator token of 32+ "
+                "characters before approvals can be decided.",
+                file=sys.stderr,
+            )
+            return False
+        return True
+
+    def _show(row: dict[str, Any], number: int | None = None) -> None:
+        sim = row.get("simulation")
+        if isinstance(sim, str):
+            sim = json.loads(sim)
+        prefix = f"{number}. " if number is not None else ""
+        action = row.get("action_kind", "sql")
+        print(f"{prefix}{action.upper()} · {row['approval_id']}")
+        print(f"   SQL: {row['sql']}")
+        if row.get("stated_task"):
+            print(f"   Reason: {row['stated_task']}")
+        if row.get("agent"):
+            print(f"   Requested by: {row['agent']}")
+        print(f"   Impact: {_simulation_summary(sim)}")
+
+    async def _resolve_pending(conn, value: str) -> str | None:
+        if value != "latest":
+            return value
+        rows = await store.list_pending(conn)
+        return str(rows[-1]["approval_id"]) if rows else None
+
+    async def _decide(conn, decision: str, value: str) -> int:
+        if not _require_token():
+            return 2
+        approval_id = await _resolve_pending(conn, value)
+        if not approval_id:
+            print("No writes are waiting for approval.")
+            return 1
+        decided = await store.decide(
+            conn,
+            approval_id,
+            approve=(decision == "approve"),
+            operator_token_hash=token_hash(OPERATOR_TOKEN or ""),
+            decided_by=OPERATOR_ID or "development-operator",
+        )
+        if decided is None:
+            print(
+                f"interdict: could not {decision} {approval_id}: no pending "
+                "approval matches that id and this profile's token.",
+                file=sys.stderr,
+            )
+            return 1
+        if decided == APPROVED:
+            row = await store.get(conn, approval_id)
+            tool = (
+                "run_approved_revert"
+                if row and row.get("action_kind") == "revert"
+                else "run_approved_query"
+            )
+            print(
+                f"Approved {approval_id}. The agent can now call "
+                f'{tool}(approval_id="{approval_id}").'
+            )
+        else:
+            print(f"Denied {approval_id}. It will not run.")
+        return 0
 
     async def _run() -> int:
         conn = await asyncpg.connect(dsn=CONTROL_DSN or DB_DSN, timeout=5)
         try:
-            if command == "pending":
+            if command in {"pending", "approvals"}:
                 rows = await store.list_pending(conn)
                 if not rows:
                     print("No writes are waiting for approval.")
                     return 0
-                for row in rows:
-                    sim = row.get("simulation")
-                    print(f"{row['approval_id']}  [{row['created_at']:%H:%M:%S}]")
-                    print(f"  sql:  {row['sql']}")
-                    if row.get("stated_task"):
-                        print(f"  task: {row['stated_task']}")
-                    if isinstance(sim, str):
-                        sim = json.loads(sim)
-                    print(f"  {_simulation_summary(sim)}")
+                label = ACTIVE_PROFILE_NAME or "environment"
+                print(f"{len(rows)} pending approval(s) · profile {label}\n")
+                for number, row in enumerate(rows, 1):
+                    _show(row, number)
+                    print()
+                print(f"Approve: interdict approve latest{profile_flag}")
+                print(f"Deny:    interdict deny latest{profile_flag}")
+                if command == "approvals" and sys.stdin.isatty():
+                    answer = (
+                        input("Approve the latest request? [y/N]: ").strip().lower()
+                    )
+                    if answer in {"y", "yes"}:
+                        return await _decide(conn, "approve", "latest")
                 return 0
 
-            # approve / deny need the token and an id.
-            if not args:
-                print(f"interdict {command}: missing <approval_id>", file=sys.stderr)
-                return 2
-            if not OPERATOR_TOKEN or len(OPERATOR_TOKEN) < MIN_OPERATOR_TOKEN_LENGTH:
-                print(
-                    "interdict: AGENT_OPERATOR_TOKEN must be set in this shell "
-                    "(32+ chars) and match the server's token.",
-                    file=sys.stderr,
+            if command in {"approve", "deny"}:
+                if not args:
+                    print(
+                        f"interdict {command}: missing <approval_id|latest>",
+                        file=sys.stderr,
+                    )
+                    return 2
+                return await _decide(conn, command, args[0])
+
+            if command == "revert":
+                if not _require_token():
+                    return 2
+                undo_store = UndoStore(
+                    Policy.load(POLICY_PATH).undo, schema=CONTROL_SCHEMA
                 )
-                return 2
-            approval_id = args[0]
-            decided = await store.decide(
-                conn,
-                approval_id,
-                approve=(command == "approve"),
-                operator_token_hash=token_hash(OPERATOR_TOKEN),
-                decided_by=OPERATOR_ID or "development-operator",
-            )
-            if decided is None:
-                print(
-                    f"interdict: could not {command} {approval_id}: no pending "
-                    "approval matches that id and this token.",
-                    file=sys.stderr,
+                await undo_store.ensure_schema(conn)
+                action_id = args[0] if args else "latest"
+                if action_id == "latest":
+                    record = await undo_store.latest_active(conn)
+                else:
+                    record = await undo_store.get(conn, action_id)
+                if record is None or record.get("status") != "active":
+                    print("No active undo record matches that request.")
+                    return 1
+                action_id = str(record["action_id"])
+                approval_id = str(uuid4())
+                rows = int(record["row_count"])
+                simulation = {
+                    "method": "recorded",
+                    "exact_rows": rows,
+                    "affected_rows": rows,
+                    "timed_out": False,
+                    "error": None,
+                }
+                policy = Policy.load(POLICY_PATH)
+                await store.create(
+                    conn,
+                    approval_id=approval_id,
+                    sql=f"REVERT {action_id}",
+                    stated_task=f"Human requested revert of {action_id}",
+                    agent=OPERATOR_ID or "operator",
+                    principal=principal_from_legacy(
+                        OPERATOR_ID or "operator", kind=PrincipalKind.HUMAN.value
+                    ).to_dict(),
+                    simulation=simulation,
+                    operator_token_hash=token_hash(OPERATOR_TOKEN or ""),
+                    policy_sha256=policy_fingerprint(policy),
+                    approved_rows=rows,
+                    action_kind="revert",
+                    undo_action_id=action_id,
                 )
-                return 1
-            if decided == APPROVED:
-                row = await store.get(conn, approval_id)
-                tool = (
-                    "run_approved_revert"
-                    if row and row.get("action_kind") == "revert"
-                    else "run_approved_query"
-                )
-                print(
-                    f"Approved {approval_id}. The agent can now execute it with "
-                    f'{tool}(approval_id="{approval_id}").'
-                )
-            else:
-                print(f"Denied {approval_id}. It will not run.")
-            return 0
+                return await _decide(conn, "approve", approval_id)
+
+            print(f"Unknown operator command {command!r}.", file=sys.stderr)
+            return 2
         finally:
             await conn.close()
 
@@ -1580,19 +1726,54 @@ def _migrate_control_cli() -> int:
 def main() -> None:
     """Entry point: run the MCP server over stdio (the standard MCP transport)."""
     argv = sys.argv[1:]
+    if argv and argv[0] == "setup":
+        from adapters.profile_cli import setup_cli
+
+        raise SystemExit(setup_cli(argv[1:]))
+    if argv and argv[0] == "profiles":
+        from adapters.profile_cli import profiles_cli
+
+        raise SystemExit(profiles_cli())
+    if argv and argv[0] == "profile":
+        from adapters.profile_cli import profile_cli
+
+        raise SystemExit(profile_cli(argv[1:]))
+    if argv and argv[0] == "connect":
+        from adapters.profile_cli import connect_cli
+
+        raise SystemExit(connect_cli(argv[1:]))
     if any(arg in {"-h", "--help"} for arg in argv):
         print(_USAGE)
         return
     if "--version" in argv:
         print(f"interdict {_package_version()}")
         return
+    try:
+        explicit_profile, argv = _profile_argument(argv)
+        if explicit_profile:
+            _activate_profile(explicit_profile)
+        elif "AGENT_DB_DSN" not in os.environ:
+            from engine.profiles import ProfileStore
+
+            active = ProfileStore().active_name()
+            if active:
+                _activate_profile(active)
+    except (KeyError, OSError, ValueError) as exc:
+        print(f"interdict profile: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     if argv and argv[0] == "doctor":
         raise SystemExit(_doctor_cli())
     if argv and argv[0] == "init":
         raise SystemExit(_init_cli())
     if argv and argv[0] == "migrate-control":
         raise SystemExit(_migrate_control_cli())
-    if argv and argv[0] in {"pending", "approve", "deny"}:
+    if argv and argv[0] in {
+        "pending",
+        "approvals",
+        "approve",
+        "deny",
+        "revert",
+    }:
         raise SystemExit(_operator_cli(argv))
     if argv:
         print(f"interdict: unknown command {argv[0]!r}\n\n{_USAGE}", file=sys.stderr)

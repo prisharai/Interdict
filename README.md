@@ -52,6 +52,10 @@ itself and retry.
 pip install interdict-db
 ```
 
+The PyPI distribution is named `interdict-db`; the command it installs is
+`interdict`. The separate `interdict` package on PyPI is an unrelated legacy
+dictionary utility.
+
 Working on Interdict itself? Install the local development environment instead:
 
 ```bash
@@ -63,78 +67,98 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full local validation loop.
 
 ## Quickstart
 
-For local evaluation, explicitly select the relaxed development profile:
+The normal setup is three commands:
 
 ```bash
-AGENT_SAFETY_PROFILE=development \
-AGENT_DB_DSN=postgresql://user:password@host:5432/yourdb \
-AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')" \
-interdict
+pip install interdict-db
+interdict setup --name production
+interdict connect claude --profile production
 ```
 
-On startup Interdict prints the exact `claude mcp add` / `codex mcp add`
-command to connect your agent. Verify the server is active by asking the agent
-to call `interdict_status`.
+`interdict setup` is a guided terminal wizard. It tests the connection,
+discovers tables, creates a least-privilege policy, checks the database role,
+initializes the control store, stores credentials in the operating-system
+keychain when available, and creates a named profile. It never places a
+database URL or approval credential in the MCP configuration.
 
-No database handy? Start the seeded Pagila development database:
+The connector configures the agent to launch Interdict automatically. You do
+not run a second server window. Verify the connection by asking Claude to call
+`interdict_status`, then ask it to work with the database normally.
+
+Other supported clients use the same profile:
 
 ```bash
-docker compose up -d
+interdict connect codex --profile production
+interdict connect cursor --profile production
+interdict connect custom --profile production
 ```
 
-Approvals happen in **your terminal**, never in the agent chat. The operator
-token is not exposed to the model.
+For a safe read, Interdict checks the SQL and sends it to Postgres. For a
+dangerous or large write, Interdict measures the blast radius and holds the
+exact SQL for a human decision. Approvals happen in **your terminal**, never in
+the agent chat:
 
 ```bash
-interdict pending                 # list held writes and their blast radius
-interdict approve <approval_id>   # then the agent calls run_approved_query
-interdict deny <approval_id>
+interdict approvals --profile production
+interdict approve latest --profile production
+interdict deny latest --profile production
 ```
 
-Holds expire after 30 minutes so stale measurements cannot be acted on. A
-supported successful write returns an `undo_id`. Reversal is also human-gated:
+Use the exact approval ID instead of `latest` when more than one request is
+pending. Holds expire after 30 minutes so a stale measurement cannot be acted
+on. A supported successful write returns an `undo_id`; a human can request the
+newest bounded revert with:
 
-```text
-agent: request_revert(action_id) -> human: interdict approve <id>
-agent: run_approved_revert(approval_id)
+```bash
+interdict revert latest --profile production
+```
+
+Interdict then tells the agent which approved tool call can complete the
+action. The approval credential never enters the model conversation.
+
+### Multiple databases
+
+Configure each database once and select it explicitly:
+
+```bash
+interdict setup --name staging
+interdict setup --name analytics
+interdict profiles
+interdict profile use production
+```
+
+The human chooses the active profile. Interdict does not expose an MCP tool
+that lets an agent switch itself to a different database.
+
+No database handy for local evaluation? Start the seeded Pagila database and
+choose the **Development** preset in the wizard:
+
+```bash
+docker compose up -d postgres
+interdict setup --name local-pagila
 ```
 
 ## Production setup
 
-Production mode is the default and refuses to start when the database boundary
-is unsafe. The application connection must be a non-owner, non-superuser role
-with access only to explicitly allowed tables. Approvals, undo evidence, and a
-durable audit copy must use a different database and a different role through
-`AGENT_CONTROL_DSN`.
+Production mode refuses to connect an agent when the database boundary is
+unsafe. The application connection must be a non-owner, non-superuser role
+limited to the selected tables. Approvals, undo evidence, and the durable audit
+copy must use a separate database and role.
 
-1. Create a production policy with schema-qualified tables:
+If the URL entered during `interdict setup` is too powerful, the wizard saves
+the profile as `needs-dba`, generates one owner-only SQL file for review, and
+stops. It does **not** grant itself privileges or connect the agent. A database
+administrator reviews and applies the script, then the customer reruns setup
+using the restricted role and checks it with:
 
-   ```yaml
-   mode: enforce
-   require_qualified_tables: true
-   tables:
-     allow: [public.orders, public.customers]
-   ```
+```bash
+interdict doctor --profile production
+interdict connect claude --profile production
+```
 
-2. Review the least-privilege SQL template. This command only prints SQL; it
-   never changes a database:
-
-   ```bash
-   AGENT_POLICY=policies/production.yaml interdict init
-   ```
-
-3. Use distinct credentials and run the deployment check:
-
-   ```bash
-   export AGENT_SAFETY_PROFILE=production
-   export AGENT_DB_DSN='postgresql://interdict_app:...@app-host/appdb'
-   export AGENT_CONTROL_DSN='postgresql://interdict_control:...@control-host/controldb'
-   export AGENT_POLICY='policies/production.yaml'
-   export AGENT_OPERATOR_ID='oncall@example.com'
-   export AGENT_OPERATOR_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-   interdict doctor
-   interdict
-   ```
+Advanced operators may still use environment variables and `interdict init`,
+but customers do not need to hand-write YAML or long MCP commands for the
+standard workflow.
 
 For an upgrade from the older in-application `adb_undo` schema, run
 `interdict migrate-control`. It is idempotent and copy-only: it does not delete
@@ -154,7 +178,7 @@ Interdict keeps a hard latency budget: the pass-through path must stay under
 | Safe statements wrongly blocked, green corpus | **0%** of 18 |
 | Blast-radius measurement | exact row counts, live |
 | Undo round-trip | ~4 ms, conflict-checked restore |
-| Automated tests | **370**, run in CI on every commit |
+| Automated tests | **378**, run in CI on every commit |
 
 The benchmark methodology, caveats, and raw tables live in
 [benchmarks/RESULTS.md](benchmarks/RESULTS.md). CI runs lint, the full pytest
@@ -162,6 +186,9 @@ suite against seeded Postgres 16, and the latency gate on every push and pull
 request.
 
 ## Configuration
+
+Named profiles are the recommended configuration interface. The following
+variables remain available for advanced/manual deployments:
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -211,6 +238,8 @@ The seeded database mirrors the GitHub Actions service container:
 ## Documentation
 
 - [Homepage](https://interdict.vercel.app/) -- product overview and demo.
+- [Get started](https://interdict.vercel.app/get-started.html) -- complete
+  installation, profile, agent connection, and approval guide.
 - [Design doc](docs/DESIGN.md) -- current architecture and engineering rules.
 - [v2 architecture spec](docs/SPEC_V2.md) -- forward roadmap and interface
   decisions.

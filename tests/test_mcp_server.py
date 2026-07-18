@@ -23,9 +23,11 @@ def test_mcp_actor_falls_back_to_stable_session_identity():
 def test_held_summary_points_to_terminal_then_chat():
     summary = _held_summary("approval-123", {"affected_rows": 100})
 
-    assert "operator token must never enter this chat" in summary
+    assert "approval credential outside this chat" in summary
     assert "In YOUR terminal (not here)" in summary
-    assert "AGENT_OPERATOR_TOKEN=your_token interdict approve approval-123" in summary
+    assert "interdict approvals" in summary
+    assert "interdict approve approval-123" in summary
+    assert "AGENT_OPERATOR_TOKEN" not in summary
     assert 'run_approved_query(approval_id="approval-123")' in summary
 
 
