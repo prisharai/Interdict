@@ -1,4 +1,4 @@
-# Local dev Postgres for agent-db-safety.
+# Local dev Postgres for Interdict.
 #
 # `docker compose up` gives a seeded Postgres an agent can reach:
 #   - Pagila sample schema + data (realistic FK structure)   -> db/01, db/02
@@ -12,7 +12,7 @@
 services:
   postgres:
     image: postgres:16
-    container_name: agent-db-safety-pg
+    container_name: interdict-pg
     environment:
       # The Pagila dump hardcodes ownership to the `postgres` role, so we run as
       # `postgres` to keep the vendored SQL unedited. A restricted, dedicated
@@ -33,8 +33,8 @@ services:
       timeout: 5s
       retries: 10
 
-  # The safety-layer launcher. Behind a profile so a plain `docker compose up`
-  # still brings up only Postgres. Run the interactive TUI with:
+  # The Interdict MCP server. Behind a profile so a plain `docker compose up`
+  # still brings up only Postgres. Run the server (stdio transport) with:
   #   docker compose --profile app run --rm app
   app:
     build: .

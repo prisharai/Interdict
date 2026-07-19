@@ -1,7 +1,7 @@
-# Runtime image for the agent-db-safety launcher (`agentdb`).
+# Runtime image for the Interdict MCP server (`interdict`).
 #
-#   docker build -t agentdb .
-#   docker run --rm -it --network=host agentdb            # talk to a local DB
+#   docker build -t interdict .
+#   docker run --rm -it --network=host interdict          # talk to a local DB
 #   # or, via compose (brings up Postgres too):
 #   docker compose --profile app run --rm app
 FROM python:3.11-slim
@@ -24,4 +24,4 @@ RUN pip install --no-cache-dir .
 ENV AGENT_DB_DSN=postgresql://postgres:postgres@postgres:5432/pagila \
     AGENT_AUDIT_LOG=/app/logs/audit.jsonl
 
-ENTRYPOINT ["agentdb"]
+ENTRYPOINT ["interdict"]

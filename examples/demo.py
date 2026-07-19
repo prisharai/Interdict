@@ -120,8 +120,23 @@ async def main() -> None:
         print(f"   rows remaining={await _count(pool)}")
 
         print("\n4. Undo the approved delete")
-        reverted = await sess.revert_write(
+        requested = await sess.request_revert(
             executed["undo_action_id"], agent="demo-agent"
+        )
+        revert_approval_id = requested["approval_id"]
+        print(f"   held approval_id={revert_approval_id}")
+        print(f"   operator runs: interdict approve {revert_approval_id}")
+        async with pool.acquire() as conn:
+            decided = await ApprovalStore(policy.undo.schema).decide(
+                conn,
+                revert_approval_id,
+                approve=True,
+                operator_token_hash=token_hash(OPERATOR_TOKEN),
+                decided_by="demo-operator",
+            )
+        print(f"   operator decision={decided}")
+        reverted = await sess.run_approved_revert(
+            revert_approval_id, executor="demo-agent"
         )
         print(f"   reverted={reverted['ok']} rows_restored={reverted['rows_restored']}")
         print(f"   rows restored={await _count(pool)}")

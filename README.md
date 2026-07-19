@@ -6,7 +6,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/interdict-db?style=for-the-badge&logo=python&logoColor=white&label=)](https://pypi.org/project/interdict-db/)
 [![CI](https://img.shields.io/github/actions/workflow/status/prisharai/Interdict/ci.yml?branch=main&style=for-the-badge&label=CI&logo=github)](https://github.com/prisharai/Interdict/actions/workflows/ci.yml)
 [![Homepage](https://img.shields.io/badge/Homepage-0f766e?style=for-the-badge&logo=google-chrome&logoColor=white)](https://interdict.vercel.app/)
-[![Docs](https://img.shields.io/badge/Docs-0f766e?style=for-the-badge&logo=readthedocs&logoColor=white)](https://github.com/prisharai/Interdict/tree/main/docs)
+[![Docs](https://img.shields.io/badge/Docs-0f766e?style=for-the-badge&logo=readthedocs&logoColor=white)](https://interdict.vercel.app/get-started.html)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 </div>
 
@@ -240,9 +240,6 @@ The seeded database mirrors the GitHub Actions service container:
 - [Homepage](https://interdict.vercel.app/) -- product overview and demo.
 - [Get started](https://interdict.vercel.app/get-started.html) -- complete
   installation, profile, agent connection, and approval guide.
-- [Design doc](docs/DESIGN.md) -- current architecture and engineering rules.
-- [v2 architecture spec](docs/SPEC_V2.md) -- forward roadmap and interface
-  decisions.
 - [Benchmark results](benchmarks/RESULTS.md) -- measured latency and correctness
   results.
 - [Research notes](research/README.md) -- study harness and validation material.
@@ -259,7 +256,6 @@ tests/       correctness, race, fault-injection, evasion, and MCP tests
 examples/    local demo script
 website/     landing page source for interdict.vercel.app
 research/    study harness, figures, and paper artifacts
-docs/        design notes and architecture specs
 ```
 
 ## Contributing
