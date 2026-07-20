@@ -1,9 +1,9 @@
 """Asynchronous, non-blocking audit log.
 
-A query must NEVER wait on a log write (CLAUDE.md sec. 4). This log is also the
+A query must NEVER wait on a log write. This log is also the
 traffic corpus -- a record of real agent-generated SQL paired, where possible,
 with the agent's stated task -- which feeds the red/green corpora and
-intent-mismatch detection (sec. 10).
+intent-mismatch detection.
 
 Design for the latency budget:
 

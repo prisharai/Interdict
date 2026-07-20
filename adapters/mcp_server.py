@@ -354,9 +354,9 @@ class ShadowSession:
             )
         )
 
-        # Blast-radius simulation (Day 4) -- OFF the normal path: only a risky
+        # Blast-radius simulation stays off the normal path: only a risky
         # write, only when enforcing and enabled. May escalate the decision to
-        # blocked (over the block limit) or to requires_confirmation (sec. 4).
+        # blocked (over the block limit) or to requires_confirmation.
         if (
             decision is not None
             and decision.allowed
@@ -379,10 +379,10 @@ class ShadowSession:
                 decision = apply_undo_capture_limit(decision, self._policy.undo)
             decision = apply_approval_ceiling(decision, approved_impact_ceiling)
 
-        # Intent-mismatch (Day 6) -- ADVISORY. Deterministic, in-memory, no I/O.
+        # Intent-mismatch is advisory, deterministic, in-memory, and does no I/O.
         # Compares the stated task to the statement's effect (blast radius from
         # simulation if measured). A HIGH contradiction may escalate to human
-        # confirmation; it NEVER blocks on its own (sec. 11).
+        # confirmation; it never blocks on its own.
         if (
             decision is not None
             and self._policy.intent.enabled
@@ -541,9 +541,9 @@ class ShadowSession:
         try:
             async with self._pool.acquire() as conn:
                 if self._undo_enabled(classification):
-                    # Reversibility (Day 5): capture before/after images so this
+                    # Capture before/after images so this
                     # write can be reverted, then execute -- all in one
-                    # transaction. Write path only; reads never reach here (sec. 4).
+                    # transaction. Write path only; reads never reach here.
                     if self._control_pool is self._pool:
                         outcome = await execute_with_undo(
                             conn,
@@ -658,7 +658,7 @@ class ShadowSession:
             undo_reason=undo_reason,
         ).to_dict()
 
-        # Non-blocking enqueue -- the query does not wait on this (sec. 4).
+        # Non-blocking enqueue: the query does not wait on this.
         self._audit.record(
             {
                 "event": "query",
@@ -1086,7 +1086,7 @@ def _mcp_actor(ctx: Context) -> str:
 async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
     """Open the pool + audit log and load the policy on startup; close cleanly.
 
-    Policy loading (YAML -> Policy) happens here, once, off the hot path (sec. 4).
+    Policy loading (YAML -> Policy) happens here, once, off the hot path.
     """
     policy = Policy.load(POLICY_PATH)
 
@@ -1118,7 +1118,7 @@ async def lifespan(_server: FastMCP) -> AsyncIterator[AppContext]:
         UndoStore(policy.undo, schema=CONTROL_SCHEMA) if policy.undo.enabled else None
     )
     approval_store = ApprovalStore(CONTROL_SCHEMA, ttl_seconds=APPROVAL_TTL_SECONDS)
-    # Load the unique/PK column metadata once, off the hot path (sec. 4): it lets
+    # Load the unique/PK column metadata once, off the hot path; it lets
     # a point write by a unique key skip simulation while a bulk write on a
     # non-unique column is still simulated. Ensure the approvals table exists in
     # the same round trip (startup-only DDL).
@@ -1181,7 +1181,7 @@ async def run_query(
     ``run_approved_query(approval_id)`` to execute the approved write. Never
     ask the user for the operator token; it must not appear in this chat.
     ``stated_task`` is the agent's description of what it's doing -- captured
-    for intent-mismatch detection later (sec. 10); advisory.
+    for later advisory intent-mismatch detection.
 
     When a write is reversible, the result carries ``undo_action_id``. Pass it
     to ``request_revert``; a human must approve the undo before it can run.

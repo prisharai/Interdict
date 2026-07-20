@@ -1,4 +1,4 @@
-"""Day 1 tests: pass-through + shadow-mode logging.
+"""Pass-through and shadow-mode logging tests.
 
 Exercises ``ShadowSession`` directly (no MCP transport needed -- that's the point
 of keeping it transport-agnostic). Verifies that:

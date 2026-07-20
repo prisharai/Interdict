@@ -1,4 +1,4 @@
-"""Day 3 tests: deterministic policy engine.
+"""Deterministic policy-engine tests.
 
 Pure, in-memory, no database. Each rule is exercised in isolation, plus the
 structured-rejection shape, LIMIT injection (and its parse-cache safety), and the

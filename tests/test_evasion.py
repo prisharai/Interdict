@@ -1,11 +1,10 @@
-"""Day 8 evasion suite: disguises must not get danger past the policy.
+"""Evasion suite: disguises must not get danger past the policy.
 
 Because classification is done on the real Postgres AST (never the raw text),
 comments / casing / whitespace / quoting cannot smuggle anything through. This
 is a *matrix*: every dangerous base statement is run through every disguise and
-must still be blocked. The named cases at the bottom are permanent regressions
-for evasions found during the build (CLAUDE.md §8 Day 8 -- "every previously-found
-evasion is a permanent regression test").
+must still be blocked. The named cases at the bottom are permanent regression
+tests for evasions found during development.
 
 Pure, in-memory (no DB), against the shipped policy.
 """

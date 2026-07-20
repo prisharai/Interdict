@@ -6,7 +6,7 @@
 #
 # Seed scripts in ./db are mounted into the image's init dir and run, in
 # alphabetical order, ONLY on first start (when the data volume is empty).
-# The DB resets freely; never assume persistence (CLAUDE.md sec. 6).
+# This local database is disposable; never rely on it for persistent data.
 # To re-seed from scratch: `docker compose down -v && docker compose up`.
 
 services:
@@ -16,7 +16,7 @@ services:
     environment:
       # The Pagila dump hardcodes ownership to the `postgres` role, so we run as
       # `postgres` to keep the vendored SQL unedited. A restricted, dedicated
-      # agent role (least-privilege) can be layered on later (Day 1+).
+      # least-privilege agent roles can be added for production-like testing.
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: pagila

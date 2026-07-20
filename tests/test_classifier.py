@@ -1,8 +1,8 @@
-"""Day 2 tests: parse + classify (observe-only).
+"""Structural SQL parsing and classification tests.
 
-Pure, in-memory, no database. Covers the classification matrix and the tricky
-cases CLAUDE.md §8 Day 2 calls out by name -- CTEs, sub-selects, UPDATE...FROM,
-comments, multi-statement, system-catalog refs -- plus the anti-evasion extras
+Pure, in-memory, no database. Covers the classification matrix and difficult
+Postgres shapes -- CTEs, sub-selects, UPDATE...FROM, comments, multi-statement,
+system-catalog refs -- plus the anti-evasion extras
 (data-modifying CTEs, bare writes) and safe handling of parse failures.
 """
 
@@ -48,7 +48,7 @@ def test_bare_delete_is_unbounded_write():
     s = c.statements[0]
     assert s.kind == WRITE
     assert s.has_where is False
-    assert s.unbounded_write is True  # exactly what Day 3 policy will block
+    assert s.unbounded_write is True  # consumed by the policy's write guard
 
 
 def test_bare_update_is_unbounded_write():
@@ -85,7 +85,7 @@ def test_show_is_other_but_session_control_fails_closed():
     assert classify("SET search_path = x").kind == DDL
 
 
-# --- Tricky cases named in §8 Day 2 ------------------------------------------
+# --- Structurally tricky Postgres cases --------------------------------------
 
 
 def test_cte_name_is_not_counted_as_a_table():
@@ -222,8 +222,8 @@ def test_to_dict_is_json_serializable():
 
 
 # --- QA regressions ----------------------------------------------------------
-# Permanent regressions for issues found in QA review (QA_REPORT.md). Each must
-# stay fixed forever (§8 Day 8).
+# Permanent regressions for issues found in QA review. Each must
+# stay fixed permanently.
 
 
 @pytest.mark.parametrize(
@@ -292,7 +292,7 @@ def test_qa_p1b_schema_qualified_name_is_always_real():
 
 @pytest.mark.parametrize("bad", ["SELECT \ud800", "\udfff", "SELECT \udc00 FROM t"])
 def test_qa_p2_malformed_unicode_does_not_raise(bad):
-    # The hot path must never raise (§4); malformed Unicode -> UNKNOWN.
+    # The hot path must never raise; malformed Unicode becomes UNKNOWN.
     c = classify(bad)
     assert c.kind == UNKNOWN
     assert c.parse_error is not None

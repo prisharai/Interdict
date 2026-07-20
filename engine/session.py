@@ -1,7 +1,7 @@
 """Transport-agnostic interactive gate: propose -> (confirm) -> execute.
 
-Day 4/5 wired blast-radius simulation and undo into the MCP adapter's
-*fire-and-hold-for-an-out-of-band-operator* flow (``ShadowSession``). Human Mode
+The MCP adapter uses a *fire-and-hold-for-an-out-of-band-operator* flow
+(``ShadowSession``). Human Mode
 (the TUI) and the future web UI need a different shape: an INTERACTIVE two-phase
 gate where the *same* caller (a) proposes a statement and is shown the verdict
 plus measured blast radius, then (b) explicitly confirms or abandons it. This
@@ -13,12 +13,12 @@ It is built entirely from the existing engine primitives -- ``classify``,
 into a UI. The TUI and a later web dashboard are thin renderers over
 ``Proposal`` and ``Result``; adding a transport never touches this file.
 
-Latency (CLAUDE.md sec. 4): ``propose`` does the same cheap hot-path work as the
+Latency: ``propose`` does the same cheap hot-path work as the
 MCP path -- parse (cached) -> classify -> evaluate -- and only ever runs the
 expensive, time-boxed simulation on a *risky write*. Reads and routine point
 writes get an ``allow`` verdict with no simulation, so the interactive path
 costs no more than the pass-through path for normal traffic. Writes fail closed,
-reads fail open (sec. 4).
+reads fail open.
 """
 
 from __future__ import annotations
@@ -136,7 +136,7 @@ class Result:
     row_count: int = 0
     error: str | None = None
     refused: str | None = None  # None | "blocked" | "needs_confirmation"
-    # Undo handle (Day 5): present when the write was captured reversibly.
+    # Undo handle, present when the write was captured reversibly.
     action_id: str | None = None
     reversible: bool | None = None
     undo_reason: str | None = None
@@ -225,7 +225,7 @@ class GuardedSession:
         # When True, a caller may deliberately run a BLOCKed statement via
         # execute(override=True). This is a HUMAN escape hatch (Human Mode opts
         # in); the MCP/agent path never constructs a session with it, so an agent
-        # can never override a block. Off by default -- fail closed (sec. 4).
+        # can never override a block. Off by default to fail closed.
         self._allow_override = allow_override
 
     @property
@@ -235,7 +235,7 @@ class GuardedSession:
 
     def _record(self, event: dict) -> None:
         if self._audit is not None:
-            self._audit.record(event)  # async, non-blocking (sec. 4)
+            self._audit.record(event)  # async and non-blocking
 
     async def propose(
         self,
@@ -375,7 +375,7 @@ class GuardedSession:
         if overridden:
             # A human is deliberately bypassing a block. Audit it loudly with the
             # exact violations being overridden -- this is the accountability that
-            # makes the escape hatch acceptable (sec. 11).
+            # makes the escape hatch acceptable.
             self._record(
                 {
                     "event": "execute_override",
@@ -400,7 +400,7 @@ class GuardedSession:
             async with self._pool.acquire() as conn:
                 if self._undo_enabled(classification):
                     # Capture before/after images and execute in one transaction
-                    # so the write can be reverted (Day 5).
+                    # so the write can be reverted.
                     outcome = await execute_with_undo(
                         conn,
                         effective_sql,
@@ -491,7 +491,7 @@ class GuardedSession:
         )
 
     async def revert(self, action_id: str, *, actor: str | None = None):
-        """Reverse a previously executed write by its undo handle (Day 5)."""
+        """Reverse a previously executed write by its undo handle."""
         if self._undo_store is None:
             raise RuntimeError("undo is not enabled for this session")
         async with self._pool.acquire() as conn:

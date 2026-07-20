@@ -1,12 +1,12 @@
-"""Day 3 corpus harness: red (should-block) and green (should-allow).
+"""Corpus harness: red (should-block) and green (should-allow).
 
 Evaluates the committed corpora against the committed ``policies/pagila.yaml`` --
 so this is a regression test on the *real* demo policy, not a hand-built one.
 
 * Every RED query must be blocked, and must surface its expected reason code.
-  A red leak (false negative) is the worst failure mode (CLAUDE.md sec. 8 Day 8).
+  A red leak (false negative) is the worst failure mode.
 * Every GREEN query must be allowed. A green block (false positive) erodes trust
-  and gets the tool disabled (sec. 11).
+  and gets the tool disabled.
 """
 
 from pathlib import Path
@@ -50,7 +50,7 @@ def test_corpora_are_nonempty_and_disjoint():
 
 
 def test_corpus_metrics(capsys):
-    """Compute and report false-negative / false-positive rates (§8 Day 8).
+    """Compute and report false-negative and false-positive rates.
 
     False negatives (a red query allowed) are the worst failure mode and MUST be
     zero. False positives (a green query blocked) erode trust and must stay low.

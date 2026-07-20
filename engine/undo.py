@@ -1,6 +1,6 @@
 """Reversibility / instant undo (differentiator #2).
 
-For *allowed writes only* -- never on the read path (CLAUDE.md sec. 4, Day 5).
+For *allowed writes only* -- never on the read path.
 Around an allowed write we record a **before-image** (to restore to) and an
 **after-image** (the state the write left behind), keyed by a per-action id, so
 the change can be reverted with one call. Every record ties to an agent identity
@@ -22,7 +22,7 @@ one transaction. If any affected row changed since the agent write (or, for a
 DELETE, its key was re-created), revert restores *nothing* and returns a conflict
 for manual resolution -- it never clobbers a later change.
 
-Honest limits (sec. 11) -- by default these are blocked before execution because
+Honest limits -- by default these are blocked before execution because
 they cannot be safely inverted: multi-table ``UPDATE...FROM`` /
 ``DELETE...USING``, ``MERGE``, data-modifying CTEs, a top-level ``WITH`` on
 UPDATE/DELETE, ``INSERT ... ON CONFLICT`` (upsert), any write with its own

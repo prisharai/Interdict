@@ -31,7 +31,7 @@ campaign in `RESULTS.md`:
 |---|---|
 | Pass-through overhead (engine vs direct), p50 | ≈ 0 ms (at noise floor) |
 | Pass-through overhead, p99 | ≈ 0 ms (within ±0.5 ms noise floor) |
-| §4 latency gate (added p99 < 5 ms) | **PASS** |
+| Latency gate (added p99 < 5 ms) | **PASS** |
 | Throughput ratio (achieved/target) | 0.98–1.01 (no coordinated omission) |
 | Parse-cache hit rate (realistic mix) | ~78% |
 | Request errors over the campaign | 0 |

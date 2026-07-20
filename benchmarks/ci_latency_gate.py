@@ -25,9 +25,7 @@ import asyncpg
 from benchmarks import harness
 from benchmarks.workload import Query
 
-GATE_MS = (
-    5.0  # the §4 latency budget: added p99 on the pass-through path must be < 5 ms
-)
+GATE_MS = 5.0  # added p99 on the pass-through path must remain below 5 ms
 RATE = 500  # within the harness's valid (non-saturating) range
 MEASURE_S = 5.0
 WARMUP_S = 1.0

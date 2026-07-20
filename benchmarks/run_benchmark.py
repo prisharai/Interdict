@@ -250,7 +250,7 @@ def _overhead_table(cells, view, rates, gated: bool) -> str:
     queries' run-to-run variance (tens of ms), so a 5 ms verdict on them would be
     measuring query noise, not the engine -- shown as 'not gated'.
     """
-    last_col = "§4 gate (B−A p99 <5ms)" if gated else "gate"
+    last_col = "latency gate (B−A p99 <5ms)" if gated else "gate"
     rows = [
         f"| rate (req/s) | Δp50 B−A | Δp99 B−A (min..max) | Δp50 C−A | "
         f"Δp99 C−A (min..max) | {last_col} |",
@@ -379,12 +379,12 @@ def write_results(cells, cfg: Config, duration_s: float) -> None:
             f"{statistics.median(ba99):+.3f} ms** "
             f"(spread {min(ba99):+.2f}..{max(ba99):+.2f}); full engine (C−A) p99 "
             f"{statistics.median(ca99):+.3f} ms. "
-            f"§4 gate (added p99 < 5 ms): "
+            f"Latency gate (added p99 < 5 ms): "
             f"**{'PASS' if statistics.median(ba99) < 5 else 'FAIL'}**."
         )
 
     out = [
-        "# RESULTS.md — Day 7 latency benchmark",
+        "# RESULTS.md — latency benchmark",
         "",
         f"_Generated {datetime.now(UTC):%Y-%m-%d %H:%M UTC} · "
         f"campaign wall time {duration_s/60:.1f} min._",
@@ -456,7 +456,7 @@ def write_results(cells, cfg: Config, duration_s: float) -> None:
         "- **Layer C write cost is real and not under the read gate:** undo "
         "before-image capture (~1 ms extra round trips) and the gated BEGIN/"
         "ROLLBACK simulation on the 2% risky writes add measurable write-path "
-        "latency. The §4 5 ms gate is the *pass-through read path* (B−A) and C "
+        "latency. The 5 ms gate is the *pass-through read path* (B−A) and C "
         "without simulation; C's write overhead is reported separately, by "
         "design.\n"
         "- **Sample volume:** the spec's 200k/cell across the full matrix is hours "

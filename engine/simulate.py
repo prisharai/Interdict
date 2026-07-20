@@ -22,7 +22,7 @@ from engine.classifier import WRITE, Classification
 
 @dataclass(frozen=True)
 class SimulationConfig:
-    """When and how to simulate. Default OFF -- simulation is opt-in (sec. 4)."""
+    """When and how to simulate. Default OFF because simulation is opt-in."""
 
     enabled: bool = False
     # Deprecated compatibility field. Measurement is always non-mutating.
@@ -108,7 +108,7 @@ async def load_unique_columns(conn) -> frozenset[str]:
 def is_risky_write(
     classification: Classification, unique_columns: frozenset[str] = frozenset()
 ) -> bool:
-    """Gate: only a *risky-shaped* single write is simulated (sec. 4).
+    """Gate: only a *risky-shaped* single write is simulated.
 
     Risky = a single-statement UPDATE/DELETE/MERGE that is NOT scoped to a unique
     column, or a data-modifying CTE (routed here so it fails closed). A point write
@@ -134,7 +134,7 @@ def is_risky_write(
 async def _estimate(
     conn, sql: str, config: SimulationConfig
 ) -> tuple[int | None, float | None, str | None, bool]:
-    """Planner estimate via EXPLAIN. Time-boxed (sec. 4).
+    """Planner estimate via EXPLAIN. Time-boxed to protect the request path.
 
     Returns (rows, cost, error, timed_out). EXPLAIN still takes an AccessShare
     lock for planning, so we run it inside a transaction with SET LOCAL

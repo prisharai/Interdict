@@ -1,6 +1,6 @@
 # RED corpus -- statements that MUST be blocked under policies/default.yaml.
 # Each `expect` is a reason code that must appear in the rejection. False
-# negatives here (a red query allowed) must be ~zero (CLAUDE.md sec. 8 Day 8).
+# negatives here (a red query allowed) must remain at or near zero.
 
 - sql: "DELETE FROM rental"
   why: "bare DELETE, no WHERE -- would wipe the table"
@@ -138,7 +138,7 @@
   why: "evasion: dangerous logic hidden in an unparseable procedural body"
   expect: DDL_NOT_ALLOWED
 
-# --- QA-found leaks (Day 8 review): alias/whole-row column projections and
+# --- Regression cases: alias/whole-row column projections and
 # --- writes wrapped in EXPLAIN ANALYZE. Permanent regressions.
 
 - sql: "SELECT s.* FROM staff s WHERE staff_id = 1"

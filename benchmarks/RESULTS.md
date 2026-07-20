@@ -4,7 +4,7 @@ _Generated 2026-06-22 18:52 UTC · campaign wall time 22.0 min._
 
 ## Headline
 
-At 350 req/s (pure-overhead view), engine pass-through overhead (B−A): **p50 -0.023 ms, p99 -0.012 ms** (spread -0.32..+2.24); full engine (C−A) p99 +0.384 ms. §4 gate (added p99 < 5 ms): **PASS**.
+At 350 req/s (pure-overhead view), engine pass-through overhead (B−A): **p50 -0.023 ms, p99 -0.012 ms** (spread -0.32..+2.24); full engine (C−A) p99 +0.384 ms. Latency gate (added p99 < 5 ms): **PASS**.
 
 > The pass-through overhead is at the **measurement noise floor** of this setup (~1 ms p99, set by Docker Desktop's ~2 ms round-trip and the Python asyncio harness's ~1 ms scheduler lateness). The true per-request engine CPU cost on a cached read is microseconds (classify cache-hit ~0, async audit enqueue ~µs); end-to-end it is too small to resolve above that floor, which is itself far under the 5 ms budget. This is reported as a *bound*, not false precision.
 
@@ -54,7 +54,7 @@ Paired A/B/C in one timeline. The **rate column is per-layer**: every layer is d
 
 **Added overhead vs direct (A):**
 
-| rate (req/s) | Δp50 B−A | Δp99 B−A (min..max) | Δp50 C−A | Δp99 C−A (min..max) | §4 gate (B−A p99 <5ms) |
+| rate (req/s) | Δp50 B−A | Δp99 B−A (min..max) | Δp50 C−A | Δp99 C−A (min..max) | latency gate (B−A p99 <5ms) |
 |---|---|---|---|---|---|
 | 200 | -0.036 | -0.524 (-2.40..+0.16) | +0.020 | +0.060 (-0.93..+0.74) | PASS |
 | 350 | -0.023 | -0.012 (-0.32..+2.24) | -0.006 | +0.384 (-0.00..+3.39) | PASS |
@@ -100,6 +100,6 @@ Effect of the 2% risky (gated-simulation) writes on the **mixed** workload p99 (
 - **x86_64 Python under Rosetta 2 on Apple M1** (the interpreter is not native arm64): emulation overhead is added to every layer including the harness scheduler -- common-mode, cancels in the paired delta, but inflates absolutes. A native arm64 Python would lower the floor.
 - **Machine not fully quiesced (see env: battery + load average):** methodology §5 warns this invalidates *absolute tail* numbers (p99.9 / max). The **paired-delta headline is robust** to it (A/B/C share every stall event), but a mains-powered, quiesced re-run is recommended before quoting absolute p99.9/max as publication-grade.
 - **Single-process Python asyncio harness:** scheduler lateness (~1 ms p99) is the resolution floor for sub-ms overheads. We bound the overhead rather than claim a precise sub-ms figure.
-- **Layer C write cost is real and not under the read gate:** undo before-image capture (~1 ms extra round trips) and the gated BEGIN/ROLLBACK simulation on the 2% risky writes add measurable write-path latency. The §4 5 ms gate is the *pass-through read path* (B−A) and C without simulation; C's write overhead is reported separately, by design.
+- **Layer C write cost is real and not under the read gate:** undo before-image capture (~1 ms extra round trips) and the gated BEGIN/ROLLBACK simulation on the 2% risky writes add measurable write-path latency. The 5 ms gate is the *pass-through read path* (B−A) and C without simulation; C's write overhead is reported separately, by design.
 - **Sample volume:** the spec's 200k/cell across the full matrix is hours on this hardware; we report exact N/cell above and prioritized p99 credibility (>=5 runs, spread) over p99.9 precision.
 - **Latency gate** (`benchmarks/ci_latency_gate.py`) runs a scaled-down, same-shape open-loop check and fails if the paired B−A p99 > 5 ms (`uv run python -m benchmarks.ci_latency_gate`, exit 1 on fail). The benchmark harness is committed, but this project does not currently include GitHub Actions or another hosted CI runner, so the gate is local until wired into CI.

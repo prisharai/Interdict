@@ -1,13 +1,13 @@
 """SQL -> AST parsing via ``pglast`` (libpg_query, the real Postgres parser).
 
 HOT PATH. Every agent statement is parsed here while the agent waits, so this
-must be fast and cached (CLAUDE.md sec. 4). Never classify by string matching --
-always operate on the AST (sec. 6). Parse failures fail closed for writes
+must be fast and cached. Never classify by string matching -- always operate on
+the AST. Parse failures fail closed for writes
 (decided downstream in the policy engine; here we just surface the failure).
 
 Why ``pglast``: it binds libpg_query, the *actual* Postgres parser, so it sees
 statements exactly as the server will -- comments stripped, multi-statement
-splits, dialect quirks and all. A regex never could (sec. 6).
+splits, dialect quirks and all. A regex cannot provide that fidelity.
 
 Latency: ``parse_sql`` measures ~0.1 ms cold on a realistic statement, and we
 cache results, so repeats are effectively free. The cache is a bounded LRU keyed
@@ -28,7 +28,7 @@ from pglast.parser import ParseError
 # repeats (very common with agents looping/retrying) become ~free.
 _PARSE_CACHE_SIZE = 2048
 
-# Hard ceiling on input size, checked BEFORE any parse work (sec. 4). libpg_query
+# Hard ceiling on input size, checked before any parse work. libpg_query
 # is super-linear on huge value lists (a 40 KB IN-list takes ~400 ms), which would
 # blow the p99 budget. Real agent SQL is well under this; anything larger is
 # pathological and fails closed instantly with an O(1) length check -- the block
@@ -51,7 +51,7 @@ class ParseResult:
     ``statements`` is a tuple of ``pglast`` ``RawStmt`` nodes (empty on error).
     ``error`` is ``None`` on success, else the parser's message. We never raise
     onto the hot path -- a parse failure is data, handled by the caller (writes
-    fail closed in the policy engine, sec. 4).
+    fail closed in the policy engine).
     """
 
     statements: tuple
@@ -77,7 +77,7 @@ def parse(sql: str) -> ParseResult:
 
     if byte_len > _MAX_SQL_BYTES:
         # Fail closed BEFORE parsing -- the cheap O(1) guard that protects the
-        # latency budget from pathological inputs (sec. 4).
+        # latency budget from pathological inputs.
         return ParseResult(
             statements=(),
             error=f"input too large ({byte_len} bytes > {_MAX_SQL_BYTES} limit)",
@@ -109,7 +109,7 @@ def parse(sql: str) -> ParseResult:
     except Exception as exc:
         # Defensive: libpg_query can raise beyond ParseError for malformed input
         # -- e.g. UnicodeEncodeError on lone surrogates, or recursion limits on
-        # pathological nesting. The hot path must never raise (sec. 4): turn any
+        # pathological nesting. The hot path must never raise: turn any
         # such failure into data so the statement classifies as UNKNOWN and
         # writes fail closed downstream.
         return ParseResult(statements=(), error=f"{type(exc).__name__}: {exc}")

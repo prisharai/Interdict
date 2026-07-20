@@ -1,4 +1,4 @@
-"""Day 8 edge cases: malformed / huge / weird inputs must fail safe.
+"""Edge cases: malformed, huge, and unusual inputs must fail safe.
 
 "Fail safe" means two things, both verified here: (1) nothing ever raises onto
 the hot path -- classify and decide always return, even for garbage; and (2)
@@ -99,7 +99,7 @@ def test_huge_multi_statement_batch_is_blocked():
 
 def test_huge_input_is_blocked_within_budget():
     # QA P0: a pathological huge query must fail closed AND the block itself must
-    # be cheap (an O(1) length check before pglast), not blow the §4 budget.
+    # be cheap (an O(1) length check before pglast), not exhaust the latency budget.
     import time
 
     from engine import classifier, parser

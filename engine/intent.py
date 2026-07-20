@@ -1,7 +1,7 @@
 """Intent-mismatch detection (advisory only).
 
-NEVER on the hot path of a query the agent is waiting on; NEVER load-bearing
-(CLAUDE.md sec. 4, sec. 11). We do not claim to *know* the agent's intent -- we
+NEVER on the hot path of a query the agent is waiting on; NEVER load-bearing.
+We do not claim to *know* the agent's intent -- we
 **detect contradiction** between the agent's stated task (free text it gave us)
 and what the statement actually does (its operation and measured blast radius).
 On a strong contradiction we raise an advisory flag that can escalate a write to
@@ -13,7 +13,7 @@ The optional LLM "second opinion" is strictly out-of-band: scheduled as a
 fire-and-forget background task that only appends its opinion to the audit log,
 never gating or delaying the agent's query. It is off by default.
 
-Honest limit (sec. 11): we check *query-vs-task*, not *task-vs-reality*. If the
+Honest limit: we check *query-vs-task*, not *task-vs-reality*. If the
 stated task is itself wrong, nothing here catches it.
 """
 
@@ -115,7 +115,7 @@ _SINGULAR_DETERMINERS = {"a", "an", "this", "that"}
 _DETERMINER_SKIP = {"few"}
 
 # Stated tasks are free text from the agent; cap before any analysis so an
-# oversized task can't blow the latency budget (sec. 4). 2k chars is far more
+# oversized task cannot blow the latency budget. 2k chars is far more
 # than any real intent description; the rest is irrelevant to the heuristics.
 _MAX_TASK_CHARS = 2000
 
@@ -361,7 +361,7 @@ def check_intent(
     if info.kind not in (WRITE, DDL):
         return _NO_FLAG
 
-    # Cap the free-text task before any analysis (sec. 4): bounds the work so an
+    # Cap the free-text task before analysis to bound the work so an
     # oversized task can't blow the latency budget.
     task = stated_task[:_MAX_TASK_CHARS]
     task_lower = task.lower()
@@ -459,7 +459,7 @@ def check_intent(
 # A pluggable async assessor. When wired (off by default), the adapter schedules
 # this as a fire-and-forget background task that appends to the audit log. It
 # never gates or delays the agent's query. A real implementation should use a
-# current Claude model and feed it the stated task + classification summary.
+# supported language model and feed it the stated task + classification summary.
 
 
 async def llm_second_opinion(

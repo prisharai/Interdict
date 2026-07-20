@@ -1,13 +1,13 @@
 """Deterministic, YAML-driven policy engine.
 
 HOT PATH. ``evaluate()`` is pure in-memory rule evaluation -- no I/O, no network,
-no LLM (CLAUDE.md sec. 8, Day 3). It blocks the obviously dangerous and allows
+no LLM. It blocks the obviously dangerous and allows
 the obviously safe, and on a block returns a structured, machine-readable
 rejection (reason code, human explanation, suggested fix) so the agent can
 self-correct. Policy *loading* (YAML -> ``Policy``) happens once at startup and
 is explicitly off the hot path.
 
-Posture (sec. 4):
+Runtime posture:
 * **Fail closed on uncertainty for writes.** An unparseable statement can't be
   reasoned about, so it's blocked (we can't prove it's a harmless read).
 * **Fail open for reads.** A clean read that breaks no rule is allowed. The
@@ -17,7 +17,7 @@ Posture (sec. 4):
   it is blocked.
 
 This evaluates classifications from ``engine.classifier`` -- it never re-derives
-statement facts by string matching (sec. 6).
+statement facts by string matching.
 """
 
 from __future__ import annotations
@@ -133,12 +133,12 @@ class Decision:
     violations: tuple[Violation, ...]
     effective_sql: str
     rewritten: bool = False
-    # Blast-radius simulation (Day 4): present only when a risky write was
+    # Blast-radius simulation, present only when a risky write was
     # simulated. ``requires_confirmation`` means allowed-but-gated -- a human/agent
     # must explicitly confirm before it runs.
     simulation: dict | None = None
     requires_confirmation: bool = False
-    # Intent-mismatch (Day 6): advisory flag; can escalate to confirmation, never
+    # Intent-mismatch advisory flag; can escalate to confirmation, never
     # blocks on its own.
     intent: dict | None = None
 
@@ -271,7 +271,7 @@ def _inject_limit(sql: str, limit: int) -> tuple[str, bool]:
 
     Operates on a FRESH parse -- never the LRU-cached AST, which must stay
     immutable. Fails open: any problem returns the original SQL unchanged so a
-    read is never blocked by a rewrite hiccup (sec. 4).
+    read is never blocked by a rewrite hiccup.
 
     Cached: the rewrite is deterministic in ``(sql, limit)``, so the re-parse +
     re-render (the priciest work on the read path) happens once per unique read,
@@ -412,7 +412,7 @@ def evaluate(sql: str, classification: Classification, policy: Policy) -> Decisi
         # A write wrapped inside a non-write top node (data-modifying CTE,
         # EXPLAIN ANALYZE <write>, ...) can hide or even execute the write while
         # looking like a read. Block it deterministically -- independent of
-        # simulation, which might be disabled (sec. 4 fail closed).
+        # simulation, which might be disabled. Fail closed here.
         if stmt.nested_dml:
             violations.append(
                 Violation(
@@ -504,7 +504,7 @@ def evaluate(sql: str, classification: Classification, policy: Policy) -> Decisi
                     )
 
         # SELECT ... FOR UPDATE/SHARE takes row locks -- not an "obviously safe"
-        # read (sec. 4).
+        # read.
         if policy.block_locking and stmt.has_locking:
             violations.append(
                 Violation(
@@ -594,7 +594,7 @@ def apply_blast_radius(
         )
 
     # Unknown blast radius: we asked but couldn't get a row count. Fail closed
-    # for writes (sec. 4) -- never silently allow. A timeout is treated above as
+    # for writes -- never silently allow. A timeout is treated above as
     # recoverable (hold for confirmation); any other unmeasurable case
     # (planner error, nested-DML CTE) is a hard block.
     if rows is None:
@@ -671,7 +671,7 @@ def apply_intent(
 
     Always attaches the flag for the audit trail. A HIGH-severity contradiction
     may escalate an *allowed* write to ``requires_confirmation`` (human review) --
-    but intent NEVER blocks on its own (sec. 11): a blocked decision stays
+    but intent NEVER blocks on its own: a blocked decision stays
     blocked-for-its-own-reasons and is never un-blocked here either.
     """
     if not flag.mismatch:

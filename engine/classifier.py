@@ -1,14 +1,14 @@
 """Structural classification of a parsed statement.
 
 HOT PATH. Given an AST, determine: read / write / DDL; tables and columns
-touched; presence/absence of a WHERE clause; multi-statement detection;
-references to system catalogs (CLAUDE.md sec. 8, Day 2). Pure in-memory work --
-no I/O, no string matching, everything derived from the AST (sec. 6).
+touched; presence/absence of a WHERE clause; multi-statement detection; and
+references to system catalogs. Pure in-memory work -- no I/O, no string
+matching, everything derived from the AST.
 
-This is still **observe-only**: we describe a statement, we don't decide on it.
-The policy engine (Day 3) consumes this. A few extras beyond the literal Day 2
-list are computed because they're cheap and directly serve the project's
-anti-evasion goals (sec. 8 Day 8):
+This layer is descriptive: it reports structural facts but does not decide
+whether a statement may run. The policy engine consumes the result. A few
+additional facts are computed because they are cheap and directly support
+anti-evasion checks:
 
 * ``nested_dml`` -- a write hidden under a non-write top node, e.g. a
   data-modifying CTE ``WITH d AS (DELETE ... RETURNING *) SELECT * FROM d``. The
@@ -16,7 +16,7 @@ anti-evasion goals (sec. 8 Day 8):
   a read. We look inside.
 * ``unbounded_write`` -- any UPDATE/DELETE in the tree (top-level *or* nested)
   with no WHERE clause. This is exactly the "bare DELETE/UPDATE" the policy will
-  block on Day 3, surfaced here so detection lives with the parse, not the rule.
+  block, surfaced here so detection lives with the parse rather than the rule.
 
 Latency: pure tree walks over an already-parsed (cached) AST -- microseconds.
 ``classify`` itself is LRU-cached on the raw SQL so repeated identical
@@ -47,7 +47,7 @@ _DROP_RELATION_TYPES = {
 # Kinds, in increasing order of severity. The aggregate kind of a multi-statement
 # input is the most severe of its parts (a batch is as dangerous as its worst
 # statement). UNKNOWN is reserved for parse failures -- treated as dangerous so
-# writes fail closed downstream (sec. 4).
+# writes fail closed downstream.
 READ = "read"
 WRITE = "write"
 DDL = "ddl"
@@ -64,7 +64,7 @@ _CONDITIONAL_WRITE_STMTS = {"UpdateStmt", "DeleteStmt"}
 
 # Node types that change schema/objects (DDL). Curated for the dangerous and
 # common cases; anything unrecognized falls through to OTHER but keeps its
-# ``stmt_type`` so we can spot and add it from the corpus (sec. 10).
+# ``stmt_type`` so the corpus can expose missing classifications.
 _DDL_STMTS = {
     "CreateStmt",
     "CreateTableAsStmt",
@@ -99,13 +99,13 @@ _DDL_STMTS = {
 # schema, and execute no arbitrary query. These (and only these) classify as
 # OTHER. Everything unrecognized fails closed (see _kind_for). Note ExplainStmt
 # is deliberately NOT here -- EXPLAIN ANALYZE actually runs the statement, so it
-# isn't safe by node type alone; Day 3 policy can carve out plain EXPLAIN.
+# isn't safe by node type alone; policy can carve out plain EXPLAIN.
 _SAFE_UTILITY_STMTS = {
     "VariableShowStmt",  # SHOW
 }
 
 # System schemas. A reference into these is a catalog touch -- something the
-# policy will gate (sec. 8 Day 3). Unqualified ``pg_*`` relations resolve to
+# policy will gate. Unqualified ``pg_*`` relations resolve to
 # pg_catalog in Postgres, so we flag those by name too.
 _SYSTEM_SCHEMAS = {"pg_catalog", "information_schema"}
 
@@ -143,7 +143,7 @@ class Classification:
     extra: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        """JSON-serializable form for the audit log (sec. 10)."""
+        """JSON-serializable form for the audit log."""
         return {
             "kind": self.kind,
             "statement_count": self.statement_count,
@@ -287,7 +287,7 @@ def _real_tables(walk: _Walk) -> tuple[str, ...]:
 
     A RangeVar is dropped only when an in-scope CTE shadows it AND it is not a
     write target -- so nested CTEs can't hide outer real tables and same-named
-    CTEs can't hide write targets (scope-correct, sec. 6).
+    CTEs cannot hide write targets.
     """
     out: set[str] = set()
     for schema, relname, shadowed, node_id in walk.rangevars:
@@ -344,7 +344,7 @@ def _kind_for(stmt_type: str, walk: _Walk, sel_into: bool) -> str:
         return READ
     if stmt_type in _SAFE_UTILITY_STMTS:
         return OTHER
-    # Fail closed (sec. 4): every other top-level node is side-effecting or
+    # Fail closed: every other top-level node is side-effecting or
     # unrecognized -- DO/CALL blocks (whose bodies we can't parse), COPY (incl.
     # COPY ... PROGRAM shell-out), LOCK, VACUUM, REINDEX, REFRESH MATERIALIZED
     # VIEW, CREATE/DROP DATABASE, ALTER SYSTEM, PREPARE/EXECUTE, future node

@@ -16,11 +16,11 @@ classifiers = [
     "Topic :: Security",
 ]
 
-# Runtime dependencies. Kept deliberately minimal -- everything here can end up
-# near the request path, so we add deps consciously (CLAUDE.md sec. 4, sec. 7).
+# Runtime dependencies are kept deliberately minimal because everything here
+# can affect installation size, startup time, or the request path.
 dependencies = [
-    # Real Postgres parser (libpg_query binding). Never regex/string matching
-    # for classification -- always the AST (CLAUDE.md sec. 6).
+    # Real Postgres parser (libpg_query binding). Classification always uses
+    # the AST rather than regex or string matching.
     "pglast>=6,<8",
     # Fast async Postgres driver. Async/no-blocking-I/O on the engine path.
     "asyncpg>=0.29,<0.31",
@@ -48,7 +48,7 @@ bench = [
 dev = [
     "hdrhistogram>=0.10.7",
     "pytest>=8,<9",
-    # The engine is async end-to-end; async tests need this from Day 1.
+    # The engine is async end-to-end, so its tests need async support.
     "pytest-asyncio>=0.23,<0.25",
     "ruff>=0.5,<1.0",
     "black>=24,<26",

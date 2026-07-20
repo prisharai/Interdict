@@ -1,6 +1,6 @@
 # GREEN corpus -- statements that MUST be allowed under policies/default.yaml.
 # False positives here (a green query blocked) erode trust and get the tool
-# disabled (CLAUDE.md sec. 11) -- keep this set passing.
+# disabled, so keep this set passing.
 
 - sql: "SELECT film_id, title FROM film WHERE film_id = 1"
   why: "ordinary scoped read on an allowed table"
@@ -40,7 +40,7 @@
 
 # --- Legit queries that exercise the same surfaces as the evasions but are
 # --- actually safe. These guard against FALSE POSITIVES (over-blocking erodes
-# --- trust, CLAUDE.md sec. 11) -- comments/casing/quoting must not trip us up.
+# --- trust) -- comments/casing/quoting must not trip us up.
 
 - sql: "/* daily report */ SELECT title, rental_rate FROM film WHERE film_id = 5"
   why: "comments are fine on a legit scoped read"

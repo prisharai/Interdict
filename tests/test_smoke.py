@@ -1,10 +1,9 @@
-"""Day 0 smoke test.
+"""Development-database smoke test.
 
 Confirms the dev stack is actually usable: we can reach the Dockerized Postgres
 and the seed completed in full (Pagila + the two large generated tables). This
-deliberately checks real row counts rather than ``assert True`` -- the Day 0
-blocker was a half-seeded volume that *looked* up but was missing the large
-tables (see docs/DECISIONS.md, 2026-06-20). This test would have caught that.
+deliberately checks real row counts rather than ``assert True`` -- this catches
+a half-seeded volume that *looks* healthy but is missing the large tables.
 
 If the database isn't running (e.g. CI without Docker, or before
 ``docker compose up``), the test SKIPS rather than fails, so the suite stays

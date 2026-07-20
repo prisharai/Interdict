@@ -1,4 +1,4 @@
-"""Day 8 protocol/compatibility: a real client and a real ORM through the server.
+"""Protocol compatibility with a real client and ORM through the server.
 
 Proves real-world SQL flows through the safety layer unchanged:
 

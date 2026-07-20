@@ -246,8 +246,6 @@ __marimo__/
 docs/
 !research/docs/
 !research/docs/**
-CLAUDE.md
-AGENTS.md
 QA_REPORT.md
 benchmarks/BENCHMARK_SPEC.md
 

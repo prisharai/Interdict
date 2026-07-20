@@ -1,6 +1,6 @@
 """Fault injection: infrastructure failures, not policy decisions.
 
-The §4 contract says writes fail closed on uncertainty and logging is
+The runtime contract says writes fail closed on uncertainty and logging is
 fail-open. The enforcement tests prove that for *decisions*; these tests
 prove it when the infrastructure itself fails mid-flight: a backend
 terminated while a write waits on a lock, a statement timeout firing inside

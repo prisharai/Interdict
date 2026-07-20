@@ -1,4 +1,4 @@
-"""Day 3 integration: policy enforcement through the adapter (needs Postgres).
+"""Policy enforcement through the adapter (needs Postgres).
 
 Proves the engine's decision actually governs the database: a blocked statement
 never reaches Postgres, an allowed read runs, and an unbounded read comes back
@@ -146,7 +146,7 @@ async def test_observe_mode_cannot_touch_interdict_control_plane(make_session):
     assert res["block_reason"] == "CONTROL_PLANE_ACCESS"
 
 
-# --- Day 4: blast-radius simulation through the adapter -----------------------
+# --- Blast-radius simulation through the adapter -----------------------------
 
 
 @pytest.fixture
@@ -602,7 +602,7 @@ async def test_reads_are_not_simulated_through_adapter(make_session):
     assert res["row_count"] == 1
 
 
-# --- Day 5: reversible writes through the adapter -----------------------------
+# --- Reversible writes through the adapter -----------------------------------
 
 
 async def test_write_is_reversible_through_adapter(make_session, scratch):

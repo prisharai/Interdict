@@ -1,4 +1,4 @@
-"""Day 6 tests: intent-mismatch detection (advisory only).
+"""Intent-mismatch detection tests (advisory only).
 
 Pure, in-memory, no database. Covers the deterministic contradiction signals
 (scope/magnitude, read-vs-write, table mismatch), that it only ever flags writes,

@@ -8,7 +8,7 @@ persisted in the control store, the operator decides from their own terminal
 (``interdict approve <id>``, token read from their
 environment), and the agent then resumes with only the approval id.
 
-Latency notes (CLAUDE.md sec. 4): nothing here is on the pass-through path. A
+Latency notes: nothing here is on the pass-through path. A
 row is written only when a write is held (it already paid for simulation), and
 reads happen only when an operator or a resumed approval asks.
 

@@ -1,4 +1,4 @@
-"""Day 5 tests: reversibility / instant undo (needs Postgres).
+"""Reversibility and bounded undo tests (needs Postgres).
 
 Proves a recorded write can be reverted to restore prior state for UPDATE,
 DELETE, and INSERT; that the undo log is the who/what/when audit trail; that a

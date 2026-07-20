@@ -3,9 +3,8 @@
 --
 -- WHY: Pagila gives realistic relational structure (FKs, views, 22 tables) but
 -- its tables are tiny. Blast-radius simulation ("this UPDATE would hit 2.3M
--- rows") and the Day 7 latency benchmarks are only meaningful at real volume.
--- These two tables supply that volume (CLAUDE.md sec. 4, sec. 8 Day 0/4/7;
--- decision logged in docs/DECISIONS.md 2026-06-19).
+-- rows") and latency benchmarks are only meaningful at real volume. These two
+-- tables supply that volume.
 --
 -- This runs once, at first container init (empty data dir), after Pagila
 -- schema (01) and data (02). Expect ~1-2 min to generate + index.
