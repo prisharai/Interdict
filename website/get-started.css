@@ -238,6 +238,37 @@
 }
 .command-table span { color: var(--muted); }
 
+.faq-inline-link {
+  margin-top: -8px;
+  font-size: 0.88rem;
+}
+.faq-inline-link a { color: var(--blue); font-weight: 600; }
+
+.faq-item {
+  margin-top: 22px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+}
+.faq-item summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 1.02rem;
+  color: var(--ink);
+}
+.faq-item summary::marker { color: var(--blue); }
+.faq-item ol {
+  margin: 18px 0 0;
+  padding-left: 22px;
+  color: #4d4d52;
+  font-size: 0.96rem;
+  line-height: 1.6;
+}
+.faq-item li { margin-bottom: 14px; }
+.faq-item li:last-child { margin-bottom: 0; }
+.faq-item .command-box { margin: 10px 0; }
+
 .guide-finish {
   margin-top: 80px;
   padding: 50px;

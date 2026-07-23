@@ -47,6 +47,7 @@
         <a href="#profiles">Multiple databases</a>
         <a href="#production">Production handoff</a>
         <a href="#commands">Command reference</a>
+        <a href="#faq">FAQ</a>
       </aside>
 
       <article class="guide-content">
@@ -89,6 +90,10 @@
             <code>interdict setup --name production</code>
             <button class="guide-copy" data-copy="interdict setup --name production">Copy</button>
           </div>
+          <p class="faq-inline-link">
+            Just want to test it out?
+            <a href="#faq-local-test">Click here</a>.
+          </p>
           <p>The wizard walks you through:</p>
           <div class="feature-grid">
             <div><b>Connection test</b><span>Confirms PostgreSQL is reachable.</span></div>
@@ -227,6 +232,44 @@ SQL · 98c4…
             <div><code>interdict deny latest</code><span>Deny the newest request.</span></div>
             <div><code>interdict revert latest</code><span>Human-initiate the newest undo.</span></div>
           </div>
+        </section>
+
+        <section id="faq" class="guide-section">
+          <span class="eyebrow">Running FAQs</span>
+          <h2>Common questions while testing Interdict</h2>
+
+          <details class="faq-item" id="faq-local-test" open>
+            <summary>Just want to test it out? How do I try Interdict locally, without a real database?</summary>
+            <ol>
+              <li>Start Docker Desktop and wait for it to finish loading.</li>
+              <li>
+                From the repo root, start the bundled sample database:
+                <div class="command-box">
+                  <code>docker compose up -d postgres</code>
+                  <button class="guide-copy" data-copy="docker compose up -d postgres">Copy</button>
+                </div>
+              </li>
+              <li>Wait about 10&ndash;20 seconds for it to seed, then confirm it's healthy:
+                <div class="command-box">
+                  <code>docker compose ps</code>
+                  <button class="guide-copy" data-copy="docker compose ps">Copy</button>
+                </div>
+              </li>
+              <li>
+                When <code>interdict setup</code> asks for the PostgreSQL URL, paste:
+                <div class="command-box">
+                  <code>postgresql://postgres:postgres@localhost:5433/pagila</code>
+                  <button class="guide-copy" data-copy="postgresql://postgres:postgres@localhost:5433/pagila">Copy</button>
+                </div>
+              </li>
+              <li>For the control database, reuse the same URL &mdash; that's fine for local testing only.</li>
+              <li>
+                Choose the <b>Development</b> preset. Production requires a
+                locked-down, non-superuser role that the default
+                <code>postgres</code> superuser doesn't have.
+              </li>
+            </ol>
+          </details>
         </section>
 
         <section class="guide-finish">

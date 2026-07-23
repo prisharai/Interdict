@@ -15,6 +15,7 @@ from typing import Any
 
 import asyncpg
 
+from adapters import tui
 from engine.approvals import ApprovalStore
 from engine.policy import Policy
 from engine.profiles import (
@@ -33,29 +34,29 @@ from engine.undo import UndoConfig, UndoStore
 
 
 def _prompt(message: str, default: str | None = None) -> str:
-    suffix = f" [{default}]" if default else ""
-    value = input(f"{message}{suffix}: ").strip()
+    suffix = tui.dim(f" [{default}]") if default else ""
+    value = input(f"{tui.bold(message)}{suffix}: ").strip()
     return value or (default or "")
 
 
 def _yes_no(message: str, *, default: bool) -> bool:
     label = "Y/n" if default else "y/N"
-    value = input(f"{message} [{label}]: ").strip().lower()
+    value = input(f"{tui.bold(message)} {tui.dim(f'[{label}]')}: ").strip().lower()
     if not value:
         return default
     return value in {"y", "yes"}
 
 
 def _choice(message: str, options: list[str], *, default: int = 1) -> int:
-    print(message)
+    print(tui.bold(message))
     for index, option in enumerate(options, 1):
-        marker = " (recommended)" if index == default else ""
-        print(f"  {index}. {option}{marker}")
+        marker = tui.good(" (recommended)") if index == default else ""
+        print(f"  {tui.accent(str(index))}. {option}{marker}")
     while True:
         raw = _prompt("Choose", str(default))
         if raw.isdigit() and 1 <= int(raw) <= len(options):
             return int(raw)
-        print(f"Enter a number from 1 to {len(options)}.")
+        print(tui.warn(f"Enter a number from 1 to {len(options)}."))
 
 
 def _extract_name(args: list[str], default: str | None = None) -> str | None:
@@ -104,12 +105,12 @@ async def _inspect_control(dsn: str):
 
 
 def _select_tables(discovered: list[str]) -> list[str]:
-    print(f"\nDiscovered {len(discovered)} table/view(s):")
+    print(tui.bold(f"\nDiscovered {len(discovered)} table/view(s):"))
     for table in discovered[:50]:
         print(f"  - {table}")
     if len(discovered) > 50:
-        print(f"  ... and {len(discovered) - 50} more")
-    print("\nEnter 'all' or a comma-separated list of schema.table names.")
+        print(tui.dim(f"  ... and {len(discovered) - 50} more"))
+    print(tui.dim("\nEnter 'all' or a comma-separated list of schema.table names."))
     while True:
         raw = _prompt("Tables the agent may access", "all")
         selected = (
@@ -119,10 +120,10 @@ def _select_tables(discovered: list[str]) -> list[str]:
         )
         unknown = sorted(set(selected) - set(discovered))
         if unknown:
-            print("Not discovered: " + ", ".join(unknown))
+            print(tui.warn("Not discovered: " + ", ".join(unknown)))
             continue
         if not selected:
-            print("Choose at least one table.")
+            print(tui.warn("Choose at least one table."))
             continue
         return selected
 
@@ -155,29 +156,122 @@ def _setup_sql(tables: list[str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# Groups the raw, technical strings from ``production_errors`` into plain-
+# language categories. Ordered so the first matching predicate wins; anything
+# left over (a future error string that doesn't fit yet) still gets shown,
+# under a generic header, instead of silently vanishing.
+_DBA_ERROR_GROUPS: tuple[tuple[object, str, str], ...] = (
+    (
+        lambda e: "application role" in e and "is overpowered" in e,
+        "The application role has more power than an agent should ever hold",
+        "It can do things far outside reading and writing your tables --"
+        " own the database, bypass row security, or create databases and"
+        " roles. If SQL were ever misused, this role could cause damage"
+        " Interdict cannot stop.",
+    ),
+    (
+        lambda e: "application role" in e
+        and ("reserved schema" in e or "owns relation" in e),
+        "The application role can already reach Interdict's own security records",
+        "adb_undo and interdict_control hold approval history and undo"
+        " evidence. If the application role can read or own anything there,"
+        " an agent could tamper with its own audit trail.",
+    ),
+    (
+        lambda e: "application role" in e
+        and ("can CREATE in schema" in e or "dangerous table privilege" in e),
+        "The application role can create objects or holds risky table privileges",
+        "TRUNCATE, TRIGGER, REFERENCES, and schema-level CREATE go beyond"
+        " what an agent issuing ordinary reads and writes needs.",
+    ),
+    (
+        lambda e: "different Postgres database" in e
+        or "different database role" in e
+        or "AGENT_CONTROL_DSN is required" in e,
+        "Approvals, undo evidence, and audit records aren't kept separate "
+        "from your data",
+        "Production requires a different database and a different role for"
+        " this control storage, so a compromised agent can't erase or forge"
+        " its own approval history.",
+    ),
+    (
+        lambda e: "control role" in e and "is overpowered" in e,
+        "The control-storage role has more power than it should",
+        "The role guarding approvals and undo evidence should be as"
+        " ordinary as the application role -- never a superuser or"
+        " role-creator.",
+    ),
+    (
+        lambda e: "AGENT_OPERATOR_TOKEN" in e or "AGENT_OPERATOR_ID" in e,
+        "Human operator approval isn't fully configured",
+        "A long random token and a stable operator identity are required so"
+        " a human, not the agent, approves high-impact writes.",
+    ),
+)
+
+
+def _explain_needs_dba(errors: list[str]) -> None:
+    """Print the raw ``production_errors`` list as grouped, plain English."""
+    print()
+    print(
+        tui.bad(
+            "This connection needs a database administrator before Interdict "
+            "can protect it in production."
+        )
+    )
+    print(
+        tui.dim(
+            "Here is what needs to change, in plain language. The exact "
+            "technical detail is listed under each."
+        )
+    )
+    remaining = list(errors)
+    for predicate, header, explanation in _DBA_ERROR_GROUPS:
+        matched = [e for e in remaining if predicate(e)]
+        if not matched:
+            continue
+        for e in matched:
+            remaining.remove(e)
+        print()
+        print(tui.warn(f"  {header}"))
+        print(f"    {explanation}")
+        for e in matched:
+            print(tui.dim(f"      - {e}"))
+    if remaining:
+        print()
+        print(tui.warn("  Other production requirements"))
+        for e in remaining:
+            print(tui.dim(f"      - {e}"))
+
+
 def setup_cli(args: list[str], store: ProfileStore | None = None) -> int:
     store = store or ProfileStore()
+    tui.banner(
+        "Interdict Setup",
+        "Secrets are never printed or placed in agent configuration.",
+    )
     try:
         requested_name = _extract_name(args)
         name = validate_profile_name(
             requested_name
             or _prompt("What should we call this connection?", "production")
         )
-        print("\nInterdict Setup")
-        print("Secrets will never be printed or placed in agent configuration.\n")
+
+        tui.section("Database connection")
         db_dsn = getpass.getpass("PostgreSQL connection URL to protect: ").strip()
         if not db_dsn:
-            print("A PostgreSQL connection URL is required.", file=sys.stderr)
+            print(tui.bad("A PostgreSQL connection URL is required."), file=sys.stderr)
             return 2
-        print("Testing the application database connection...")
-        application, discovered = asyncio.run(_inspect_connection(db_dsn))
+        with tui.step("Testing the application database connection"):
+            application, discovered = asyncio.run(_inspect_connection(db_dsn))
         print(
-            f"Connected to database {application.database!r} as "
-            f"role {application.role!r}."
+            f"  Connected to database {tui.accent(repr(application.database))} as "
+            f"role {tui.accent(repr(application.role))}."
         )
 
+        tui.section("Control storage")
         control_choice = _choice(
-            "\nWhere should approvals, undo evidence, and audit records live?",
+            "Where should approvals, undo evidence, and audit records live?",
             [
                 "A separate PostgreSQL database I provide",
                 "Interdict-managed control store (coming soon)",
@@ -187,8 +281,10 @@ def setup_cli(args: list[str], store: ProfileStore | None = None) -> int:
         )
         if control_choice == 2:
             print(
-                "The managed control store is not generally available yet. "
-                "Choose a separate database or local development mode."
+                tui.warn(
+                    "The managed control store is not generally available yet. "
+                    "Choose a separate database or local development mode."
+                )
             )
             return 2
         control_mode = "external" if control_choice == 1 else "local"
@@ -198,22 +294,27 @@ def setup_cli(args: list[str], store: ProfileStore | None = None) -> int:
             else db_dsn
         )
         if not control_dsn:
-            print("A control database URL is required.", file=sys.stderr)
+            print(tui.bad("A control database URL is required."), file=sys.stderr)
             return 2
-        print("Testing and initializing the control store...")
-        control = asyncio.run(_inspect_control(control_dsn))
+        with tui.step("Testing and initializing the control store"):
+            control = asyncio.run(_inspect_control(control_dsn))
 
+        tui.section("Tables")
         tables = _select_tables(discovered)
+
+        tui.section("Safety preset")
         preset_index = _choice(
-            "\nChoose a safety preset:",
+            "Choose a safety preset:",
             ["Production", "Read-only", "Development"],
             default=1,
         )
         preset = {1: "production", 2: "read-only", 3: "development"}[preset_index]
         if preset == "production" and control_mode != "external":
             print(
-                "Production requires a separate control database. Run setup "
-                "again and choose option 1.",
+                tui.bad(
+                    "Production requires a separate control database. Run "
+                    "setup again and choose option 1."
+                ),
                 file=sys.stderr,
             )
             return 2
@@ -270,7 +371,8 @@ def setup_cli(args: list[str], store: ProfileStore | None = None) -> int:
             operator_token=operator_token,
         )
 
-        print("\nProfile saved.")
+        tui.section("Result")
+        print(tui.good("Profile saved."))
         print(f"  Profile: {name}")
         print(f"  Database: {application.database}")
         print(f"  Safety preset: {preset}")
@@ -279,17 +381,18 @@ def setup_cli(args: list[str], store: ProfileStore | None = None) -> int:
             setup_path = store.setup_sql_path(name)
             setup_path.write_text(_setup_sql(tables), encoding="utf-8")
             setup_path.chmod(0o600)
-            print("\nThis database role needs DBA attention:")
-            for error in errors:
-                print(f"  - {error}")
-            print(f"\nReviewable DBA SQL: {setup_path}")
-            print("After your DBA applies it, rerun setup with the restricted DSN.")
+            _explain_needs_dba(errors)
+            print()
+            print(tui.bold("What to do next"))
+            print(f"  1. Send this file to your DBA for review: {setup_path}")
+            print("  2. Once it's applied, rerun setup with the restricted role's URL:")
+            print(f"       {tui.accent(f'interdict setup --name {name}')}")
             return 1
-        print("  Status: ready")
-        print(f"\nNext: interdict connect claude --profile {name}")
+        print(f"  {tui.good('Status: ready')}")
+        print(f"\nNext: {tui.accent(f'interdict connect claude --profile {name}')}")
         return 0
     except (OSError, asyncpg.PostgresError, ValueError, KeyError) as exc:
-        print(f"interdict setup: {exc}", file=sys.stderr)
+        print(tui.bad(f"interdict setup: {exc}"), file=sys.stderr)
         return 1
 
 
@@ -300,15 +403,20 @@ def profiles_cli(store: ProfileStore | None = None) -> int:
         print("No profiles yet. Run `interdict setup`.")
         return 0
     active = store.active_name()
-    print(f"{'':2} {'NAME':18} {'DATABASE':18} {'SAFETY':12} STATUS")
+    print(tui.bold(f"{'':2} {'NAME':18} {'DATABASE':18} {'SAFETY':12} STATUS"))
     for profile in profiles:
         marker = "*" if profile.name == active else " "
         preset = profile.safety_preset or profile.safety_profile
+        status = (
+            tui.good(profile.status)
+            if profile.status == "ready"
+            else (tui.warn(profile.status))
+        )
         print(
             f"{marker:2} {profile.name[:18]:18} {profile.database_label[:18]:18} "
-            f"{preset[:12]:12} {profile.status}"
+            f"{preset[:12]:12} {status}"
         )
-    print("\n* active human-selected profile")
+    print("\n" + tui.dim("* active human-selected profile"))
     return 0
 
 
@@ -417,7 +525,7 @@ def connect_cli(args: list[str], store: ProfileStore | None = None) -> int:
         print(f"Unsupported client {client!r}.", file=sys.stderr)
         return 2
 
-    print("\nInterdict was connected.")
+    print("\n" + tui.good("Interdict was connected."))
     print(f"  Client: {client}")
     print(f"  Profile: {profile.name}")
     print(f"  Database: {profile.database_label}")
@@ -426,5 +534,5 @@ def connect_cli(args: list[str], store: ProfileStore | None = None) -> int:
         "  Approval mode: "
         + ("human required" if profile.approval_required else "policy only")
     )
-    print("  Status: ready")
+    print(f"  {tui.good('Status: ready')}")
     return 0
